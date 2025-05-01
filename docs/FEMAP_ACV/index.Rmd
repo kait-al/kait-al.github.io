@@ -1,0 +1,927 @@
+---
+title: 'FEMAP ACV Study: Microbiota Analysis'
+author: "Kait Al"
+date: "2025-05-01"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+This document summarizes the microbiota analyses for the FEMAP+ACV study. There were 12 patients that participated in the study, but only 10 were complete with both "pre" and "post" samples (prior to and following 3 months of acetate supplementation, respectively). The two that were incomplete and not included in downstream analyses (at this time) were patients 003 and 004.
+
+# Initial Code
+
+### 1. Load required packages
+
+```{r message = FALSE, warning = FALSE}
+library(ALDEx2)
+library(dplyr)
+library(forcats)
+library(ggplot2)
+library(ggrepel)
+library(gridExtra)
+library(knitr)
+library(microbiome)
+library(patchwork)
+library(phyloseq)
+library(plyr)
+library(RColorBrewer)
+library(reshape2)
+library(rlist)
+library(sjmisc)
+library(stringr)
+library(tidyr)
+library(zCompositions)
+```
+
+### 2. Import the files
+
+```{r}
+counts <- read.table("data/cutadapt_counts2.txt", 
+                     header = TRUE, row.names = 1, sep = "\t", check.names = FALSE, 
+                     quote = "", stringsAsFactors = FALSE)
+tax <- read.table("data/cutadapt_tax2.txt", 
+                  header = TRUE, row.names = 1, sep = "\t", check.names = FALSE, 
+                  quote = "", stringsAsFactors = FALSE)
+meta<-read.table("data/metadata.txt", header=T, row.names = 1, sep='\t', comment.char = "")
+```
+
+### 3. Calculate alpha diversity on unfiltered counts table
+
+```{r}
+# make a phyloseq object
+tax<-as.matrix(tax) 
+OTU = otu_table(counts, taxa_are_rows = FALSE)
+TAX = tax_table(tax)
+physeq = phyloseq(OTU, TAX)
+```
+
+From phyloseq R package, calculate various alpha diversity measures
+
+```{r}
+div<- estimate_richness(physeq, split = TRUE, measures = NULL)
+```
+
+From microbiome R package, calculate various dominance indices
+
+```{r}
+dom<- dominance(physeq)
+```
+
+Merge the data
+
+```{r}
+div_all <- data.frame(div, dom)
+rownames(div_all)<-gsub("X","", rownames(div_all))
+
+div_merge<-merge(div_all, meta, by=0, all=FALSE)
+div_merge2<-subset(div_merge, !is.na(timepoint))
+div_merge2$participant<-as.factor(div_merge2$participant)
+div_merge2<-div_merge2[!((div_merge2$Row.names) %in% c("003_post", "004_pre")),]
+
+#write the alpha diversity measures into a new file
+#write.table(div_merge2, file="data/alpha_diversity.txt", sep='\t', quote=F)
+```
+
+Now lets do some stats to compare pairwise between pre and post samples
+
+```{r}
+# pairwise t-tests
+# Select columns to test
+columns_to_test <- colnames(div_merge2)[2:17]
+
+# Initialize results dataframe
+results <- data.frame(Variable = character(), t_statistic = numeric(), p_value = numeric(), stringsAsFactors = FALSE)
+
+# Perform pairwise t-tests
+for (col in columns_to_test) {
+  test_result <- t.test(div_merge2[[col]] ~ div_merge2$timepoint, paired = TRUE)
+  results <- rbind(results, data.frame(Variable = col, t_statistic = test_result$statistic, p_value = test_result$p.value))
+}
+
+kable(results)
+```
+
+So there are no significant trends in alpha diversity pre- vs. post-intervention.
+
+What about if we take into account the metabolic responder status? We can do this with a 2-way ANOVA.
+
+```{r}
+# perform a 2-way anova
+# Create the 'participant_id' column to group by
+div_merge2$participant_id <- sub("_.*", "", div_merge2$Row.names)
+div_merge2$participant_id<-as.factor(div_merge2$participant_id)
+
+aov_shan<-aov(Shannon ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
+summary(aov_shan)
+```
+
+Use 'summary(aov_metric)' to view the results for any of the following tests.
+
+```{r message = FALSE, warning = FALSE}
+aov_obs<-aov(Observed ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
+aov_chao<-aov(Chao1 ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
+aov_ace<-aov(ACE ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
+aov_simp<-aov(Simpson ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
+aov_invsimp<-aov(InvSimpson ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
+aov_fisher<-aov(Fisher ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
+aov_dbp<-aov(dbp ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
+aov_dmn<-aov(dmn ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
+aov_abs<-aov(absolute ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
+aov_rel<-aov(relative ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
+aov_simp2<-aov(simpson ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
+aov_core<-aov(core_abundance ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
+aov_gini<-aov(gini ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
+```
+
+Several metrics have P < 0.1, so there may be a responder-specific trend in alpha diversity changes to the intervention.
+
+### 4. Filter the counts tables for downstream analyses
+
+```{r}
+# what are the dimensions of the original counts file?
+dim(counts)
+
+# Combine the counts and tax tables into one tidier working file
+t.counts<-t(counts)
+ct<-merge(t.counts, tax, by="row.names")
+
+rownames(ct)<-ct$Row.names
+ct$Row.names <- NULL
+ct$Sequence <- NULL
+
+ct<-unite(ct,"tax.vector", Kingdom:Species, sep=':', remove=TRUE)
+
+dim(ct)
+```
+
+Check to see how many samples contain > 1000 total reads.
+
+```{r}
+ct2<-ct[,1:ncol(ct)-1]
+i <- (colSums(ct2) <=1000)
+d.s <- ct2[, !i]
+dim(d.s)
+ncol(ct2)-ncol(d.s)
+```
+
+So all the samples have > 1000 reads. Now lets apply some frequency-based cutoffs.
+
+```{r}
+d.freq <- apply(d.s, 2, function(x) {x/sum(x)})
+
+#keep SVs > 0.1% in any sample
+d.0 <- d.s[apply(d.freq, 1, max)>0.001,]
+dim(d.0)
+```
+
+You can save tables with these filtering cutoffs.
+
+```{r}
+# make relative abundance table
+d.freq0 <- data.frame(apply(d.0, 2, function(x){x/sum(x)}))
+
+#add taxonomy back in and save the filtered counts file
+d.0$tax.vector = ct$tax.vector[match(rownames(d.0), rownames(ct))]
+#write.table(d.0, file="data/dada2_tax_counts_001filt.txt", sep='\t', quote=F)
+
+#add taxonomy back in and save the filtered abundance file
+d.freq0$tax.vector = ct$tax.vector[match(rownames(d.freq0), rownames(ct))]
+#write.table(d.freq0, file="data/dada2_tax_freq_001filt.txt", sep='\t', quote=F)
+```
+
+I also want to remove very rare/sparse SVs.
+
+```{r}
+#filter SVs based on a read count cutoff
+count = 100
+d.2 <- data.frame(d.s[which(apply(d.s, 1, function(x){sum(x)}) > count),])
+dim(d.2)
+```
+
+Lets combine d.freq0 and d.2 so that we have a filtered table that contains only SVs present at 0.1% abundance AND \>100 reads across all samples.
+
+```{r}
+row_list<-intersect(rownames(d.0), rownames(d.2))
+length(row_list)
+
+d_filt<-d.s[rownames(d.s) %in% row_list,]
+
+#add taxonomy back in and save the filtered counts file
+d_filt$tax.vector = ct$tax.vector[match(rownames(d_filt), rownames(ct))]
+#write the file
+#write.table(d_filt, file="data/counts_01abun_100filt_2.txt", sep='\t', quote=F)
+
+d_filt_freq<-d.s[rownames(d.s) %in% row_list,]
+d_filt_freq<-data.frame(apply(d_filt_freq, 2, function(x){x/sum(x)}))
+d_filt_freq$tax.vector = ct$tax.vector[match(rownames(d_filt_freq), rownames(ct))]
+#write.table(d_filt_freq, file="data/abundance_01abun_100filt.txt", sep='\t', quote=F)
+```
+
+These files will be the one we primarily use downstream.
+
+# Figures
+
+## Figure 2. Alpha and beta diversity of the gut microbiota pre- and post-intervention.
+
+### 2A. Relative abundance barplot
+
+```{r}
+# Read input data
+#d <- read.table("data/counts_01abun_100filt.txt", sep="\t", quote="", check.names=F, header=T, row.names=1, comment.char="")
+#OR, rename the table made in the previous section to 'd'
+d<-d_filt
+
+# Extract and clean the taxonomic information
+taxa <- data.frame(str_split_fixed(d$tax.vector, ":", 7))
+taxa$Genus <- paste(taxa$X2, taxa$X3, taxa$X4, taxa$X5, taxa$X6, sep="_")
+
+# Merge cleaned taxa info with count data
+d1 <- cbind(d[,1:(ncol(d)-1)], Genus=taxa$Genus)
+
+# Aggregate to the genus level
+gen <- ddply(d1, "Genus", numcolwise(sum))
+row.names(gen) <- gen$Genus
+gen$Genus <- NULL
+
+# Calculate the relative abundance
+gen.f <- apply(gen, 2, function(x) x / sum(x))
+
+# Order by abundance
+y1 <- gen.f[order(rowSums(gen.f), decreasing = TRUE),]
+```
+
+We dont want to plot all the very rare taxa (below 1% abundance). We will put those in a separate group called the remainder.
+
+```{r}
+# Filter taxa above 1% abundance
+abund <- 0.01
+keep.taxa.index <- rownames(y1[rowMeans(y1) > abund,])
+
+# Retain only the relevant taxa and calculate the remainder
+y3 <- as.data.frame(y1) %>% filter(rownames(.) %in% keep.taxa.index)
+remainder <- colSums(y1[!rownames(y1) %in% keep.taxa.index, , drop = FALSE])
+y3 <- rbind(y3, remainder)
+rownames(y3)[nrow(y3)] <- "remainder"
+
+# Remove the controls
+y3<-as.data.frame(y3)
+y3 <- dplyr::select(y3, -"DNA_BLANK2", -"PCR_BLANK2", -"POS")
+
+# Convert to matrix and reshape for plotting
+y3 <- as.matrix(y3)
+melted <- melt(y3)
+colnames(melted) <- c("Genus", "Sample", "value")
+
+# Shorten genus names
+gen_name <- data.frame(str_split_fixed(melted$Genus, "_", 5))
+melted$Genus <- ifelse(gen_name$X5 == "", "Genera <1% abundance", gen_name$X5)
+
+# Custom sample ordering
+custom_order <- function(samples) {
+  df <- data.frame(
+    Sample = samples,
+    Participant = gsub("_(pre|post)", "", samples),
+    Visit = ifelse(grepl("_pre", samples), "A", "B")
+  ) %>% arrange(Participant, Visit)
+  return(df$Sample)
+}
+melted$Sample <- factor(melted$Sample, levels = custom_order(unique(melted$Sample)))
+```
+
+Make the plot
+
+```{r}
+# Define color palettes
+pal1 <- rep(c("lightgray", "#006F6B", "#00ADAB", "#ACDEE0", "#3E783A", "#76BB47", "#AAD486",
+              "#CBC02D", "#FCF281", "#C36928", "#F58123", "#F8A96E", "#F9DDCA", "#851719",
+              "#B01F24", "#ED2027", "#F3786D", "#4A2970", "#7E6BAD", "#B8ACD1", "#A71D47",
+              "#ED1F6B"))
+pal2 <- rlist::list.reverse(pal1)
+
+# Plot with faceting
+melted$Sample <- gsub("X", "", melted$Sample)
+melted$Participant <- sub("_.*", "", melted$Sample)
+melted$Timepoint <- sub(".*_", "", melted$Sample)
+melted$Timepoint <- gsub("pre", "Pre", melted$Timepoint)
+melted$Timepoint <- gsub("post", "Post", melted$Timepoint)
+melted$Timepoint <- factor(melted$Timepoint, levels = c("Pre", "Post"))
+
+bars <- ggplot(melted, aes(x=Timepoint, y=value, fill=fct_reorder(Genus, value))) +
+  geom_bar(stat="identity", position="stack") + 
+  scale_fill_manual(values=pal2) +
+  facet_grid(~Participant, scales="free_x") +
+  ylab("Relative Abundance") +
+  guides(fill = guide_legend(ncol=2, reverse=T, title="Genus")) +
+  theme_bw() +
+  theme(axis.text.x=element_text(size=8), legend.position="right", axis.title.x=element_blank(), legend.text=element_text(size=8, face="italic"), legend.title=element_text(size=10), axis.title=element_text(size=10))
+bars
+```
+
+### 2B. PCA plot
+
+```{r}
+tax1 <- d$tax.vector
+
+# Define the columns to remove (controls)
+cols_to_remove <- c("DNA_BLANK2", "PCR_BLANK2", "POS")
+
+# Remove the columns if they exist in the data frame
+d <- d[, !(colnames(d) %in% cols_to_remove)]
+
+# Split to the 6th taxonomic level -> genus (separated by :)
+split6 <- sapply(strsplit(as.character(tax1), ":"), "[", 6)
+split6 <- as.data.frame(split6)
+rownames(split6)<-rownames(d)
+split6$sv<-rownames(d)
+split6$sv_split6<-paste(split6$sv, split6$split6, sep='_')
+rownames(split6)<-rownames(d)
+
+#get only the count columns
+dm <- d[,1:ncol(d)-1]
+
+gen.f <- apply(dm, 2, function(x) {x/sum(x)})
+colSums(gen.f) #check all sum to 1
+```
+
+Apply compositional data transformation (CZM method) and CLR transformation.
+
+```{r message = FALSE, warning = FALSE}
+d.czm <- cmultRepl(t(gen.f),  label=0, method="CZM")
+```
+
+```{r}
+d.clr <- t(apply(d.czm, 1, function(x){log(x) - mean(log(x))}))
+```
+
+Compute Aitchison distances, which will be used in Fig 2C and D.
+
+```{r}
+aitch_dists <- as.matrix(dist(d.clr))
+#write.table(aitch_dists, file="data/aitchdist_filtered.txt", sep="\t", quote=F)
+```
+
+Perform PCA
+
+```{r}
+d.pcx <- prcomp(d.clr)
+
+# Define parameters for PCA
+sv_positions <- data.frame(d.pcx[["rotation"]])
+# Merge on genus table
+sv_pos <- merge(sv_positions, split6, by = 0)
+# Calculate Euclidean distance
+arrow_len <- function(x, y) {
+  sqrt((x - 0)^2 + (y - 0)^2)
+}
+sv_pos_dist <- mapply(arrow_len, sv_pos$PC1, sv_pos$PC2)
+sv_pos_dist <- as.data.frame(cbind(sv_pos_dist, sv_pos$Row.names, sv_pos$sv_split6, sv_pos$PC1, sv_pos$PC2))
+colnames(sv_pos_dist) <- c("Distance", "SV", "Genus", "PC1", "PC2")
+# Filter arrow based on distance
+filter <- sv_pos_dist %>% filter(Distance >= 0.15)
+
+d.mvar <- sum(d.pcx$sdev^2)
+# Calculate the PC1 and PC2 variance
+PC1 <- paste("PC1: ", round(sum(d.pcx$sdev[1]^2)/d.mvar, 3))
+PC2 <- paste("PC2: ", round(sum(d.pcx$sdev[2]^2)/d.mvar, 3))
+
+metadata<-tibble::rownames_to_column(meta, "SampleID")
+
+loadings<- data.frame(Variables=rownames(d.pcx$rotation), d.pcx$rotation)
+values<-merge(d.pcx$x[,c(1,2)], metadata[,c("SampleID","participant","timepoint","metabolic_responder")],
+              by.x="row.names", by.y="SampleID", all=F)
+
+# Remove unwanted rows
+values2 <- values[!(values$Row.names %in% c("003_post", "004_pre","DNA_BLANK2","PCR_BLANK2")), ]
+values2$time<-gsub("._","",values2$timepoint)
+
+# Convert participant to a factor so it's treated as discrete
+values2$participant <- as.factor(values2$participant)
+```
+
+Make the plot!
+
+```{r message = FALSE, warning = FALSE}
+p <- ggplot(values2, aes(x = PC1, y = PC2)) +
+  geom_segment(data = sv_pos, aes(x = 0, y = 0, xend = 50 * PC1, yend = 50 * PC2),
+               arrow = arrow(length = unit(1/2, 'picas')),
+               color = "grey69", alpha = 0.8, size = 0.15) + # Plot features
+  geom_text(data = filter, aes(x = 50 * as.numeric(PC1), y = 50 * as.numeric(PC2)), 
+            nudge_x = 0.25, nudge_y = 0.25, label = filter$Genus, 
+            color = "grey69", size = 3, fontface = "italic") +
+  geom_point(aes(colour = participant), size = 6) +  # Points colored by participant (Viridis)
+  geom_text(aes(label = time), size = 2.5) +
+  scale_color_brewer(palette="Paired") +
+  xlab(paste0("PC1: ", round(100 * (d.pcx$sdev[1]^2 / sum(d.pcx$sdev^2)), 1), "%")) +
+  ylab(paste0("PC2: ", round(100 * (d.pcx$sdev[2]^2 / sum(d.pcx$sdev^2)), 1), "%")) +
+  labs(colour="Participant") + 
+  theme_bw() +
+  theme(legend.position = c(0.1, 0.67), legend.background = element_blank(), legend.key = element_blank(), axis.title=element_text(size=10), legend.title = element_text(size=10))
+p
+```
+
+### 2C. Bar plot of pre vs post aitchison distance
+
+```{r}
+#dm<-read.table("data/aitchdist_filtered.txt", sep='\t', header=TRUE, row.names=1, quote="")
+#OR
+dm<-aitch_dists
+
+#remove the X from the colnames, if they're there
+#colnames(dm)<-gsub("X","", colnames(dm))
+
+intra_values <- list()
+# Loop through the dm matrix to capture the filtered values
+for(i in 1:nrow(dm)) {
+  for(j in 1:ncol(dm)) {
+    currentrow <- unlist(strsplit(rownames(dm)[i], "_"))
+    currentcol <- unlist(strsplit(colnames(dm)[j], "_"))
+    
+    # Apply the condition: same identifier (currentrow[1] == currentcol[1]), pre in row, not equal in the second part
+    if(currentrow[1] == currentcol[1] 
+       && currentrow[2] != currentcol[2] 
+       && currentrow[2] == "pre") {
+      # Store the value into the list
+      intra_values[[currentrow[1]]] <- c(intra_values[[currentrow[1]]], dm[i, j])
+    }
+  }
+}
+```
+
+```{r}
+# Convert the list into a data frame and set appropriate column names
+intra_df <- as.data.frame(intra_values)
+time_test<-t(intra_df)
+
+colnames(time_test)<-"aitch"
+rownames(time_test)<-gsub("X","", rownames(time_test))
+rownames(time_test)<-paste0(rownames(time_test), "_post")
+
+dist_merge<-merge(meta, time_test, by=0, all=FALSE)
+dist_merge$participant<-as.factor(dist_merge$participant)
+
+aitch_plot <- ggplot(dist_merge, aes(x = participant, y = aitch, fill = factor(participant))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_brewer(palette = "Paired") +
+  labs(y = "Pre vs. Post Aitchison Distance", x = "Participant") +
+  theme_bw() +
+  theme(legend.position = "none", axis.title = element_text(size = 10), axis.ticks.x = element_blank(),
+        axis.text.x = element_blank()) +  # Remove x-axis labels
+  geom_text(aes(x = participant, y = 2, label = participant), 
+            color = "white", size = 3, inherit.aes = FALSE)  # Adjust size as needed
+
+aitch_plot
+```
+
+### 2D. Box and violin plot of intra- and interindividual aitchison distance comparisons
+
+```{r}
+interindiv_pre_values <- list()
+# Loop through the dm matrix to capture the filtered values
+for(i in 1:nrow(dm)) {
+  for(j in 1:ncol(dm)) {
+    currentrow <- unlist(strsplit(rownames(dm)[i], "_"))
+    currentcol <- unlist(strsplit(colnames(dm)[j], "_"))
+    
+    # Apply the condition: same identifier (currentrow[1] == currentcol[1]), pre in row, not equal in the second part
+    if(currentrow[1] != currentcol[1] 
+       && currentrow[2] == currentcol[2] 
+       && currentrow[2] == "pre") {
+      # Store the value into the list
+      interindiv_pre_values[[currentrow[1]]] <- c(interindiv_pre_values[[currentrow[1]]], dm[i, j])
+    }
+  }
+}
+
+interindiv_post_values <- list()
+# Loop through the dm matrix to capture the filtered values
+for(i in 1:nrow(dm)) {
+  for(j in 1:ncol(dm)) {
+    currentrow <- unlist(strsplit(rownames(dm)[i], "_"))
+    currentcol <- unlist(strsplit(colnames(dm)[j], "_"))
+    
+    # Apply the condition: same identifier (currentrow[1] == currentcol[1]), post in row, not equal in the second part
+    if(currentrow[1] != currentcol[1] 
+       && currentrow[2] == currentcol[2] 
+       && currentrow[2] == "post") {
+      # Store the value into the list
+      interindiv_post_values[[currentrow[1]]] <- c(interindiv_post_values[[currentrow[1]]], dm[i, j])
+    }
+  }
+}
+
+# Convert lists to data frames
+intra_df <- data.frame(Distance = unlist(intra_values), Category = "Intra")
+inter_pre_df <- data.frame(Distance = unlist(interindiv_pre_values), Category = "Inter-Pre")
+inter_post_df <- data.frame(Distance = unlist(interindiv_post_values), Category = "Inter-Post")
+
+distance_data <- bind_rows(intra_df, inter_pre_df, inter_post_df) # Combine data frames
+
+distance_data$Category <- factor(distance_data$Category, levels = c("Intra", "Inter-Pre", "Inter-Post"))
+
+dist_comp<-ggplot(distance_data, aes(x = Category, y = Distance)) +
+  geom_violin(trim = FALSE, fill="lightgrey", alpha = 0.5) + 
+  geom_boxplot(width = 0.2, outlier.shape = NA, color = "black") +  # Add boxplot inside violin
+  theme_bw() +
+  #scale_fill_manual(values = c("Intra" = "#1f77b4", "Inter-Pre" = "#ff7f0e", "Inter-Post" = "#2ca02c")) +  # Custom colors
+  labs(y = "Aitchison Distance") +
+  theme(legend.position = "none", text = element_text(size = 10), axis.title.x = element_blank())
+
+dist_comp
+```
+
+### 2E and F, alpha diversity comparisons
+
+```{r}
+#div<-read.table("data/alpha_diversity.txt", sep="\t", quote="", check.names=F, header=T, row.names=1, comment.char="")
+#OR
+div<-div_merge2
+div$participant<-as.factor(div$participant)
+div<-div[!((div$Row.names) %in% c("003_post", "004_pre")),]
+
+shan<-ggplot(div, aes(x=timepoint, y=Shannon, group = participant, colour = participant)) +
+  geom_point(aes(fill=participant), size=4, shape=21, stroke=1, alpha=0.5) +
+  geom_line(aes(group = participant), size = 1) +
+  scale_color_brewer(palette="Paired") +
+  scale_fill_brewer(palette="Paired") +
+  labs(y="Shannon's Index") +
+  scale_x_discrete(labels = c("Pre", "Post")) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(), legend.position ="none", axis.title=element_text(size=10))
+shan
+
+core<-ggplot(div, aes(x=timepoint, y=core_abundance, group = participant, colour = participant)) +
+  geom_point(aes(fill=participant), size=4, shape=21, stroke=1, alpha=0.5) +
+  geom_line(aes(group = participant), size = 1) +
+  scale_color_brewer(palette="Paired") +
+  scale_fill_brewer(palette="Paired") +
+  labs(y="Core Abundance") +
+  scale_x_discrete(labels = c("Pre", "Post")) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(), legend.position="none", axis.title=element_text(size=10))
+core
+```
+
+### Build the figure panel
+
+```{r}
+lay<-rbind(c(1,1,1,1),c(1,1,1,1),c(2,2,3,4),c(2,2,5,6))
+grid.arrange(bars, p, aitch_plot, dist_comp, shan, core, layout_matrix=lay)
+```
+
+## Figure 3. Differential abundance comparisons.
+
+### 3A. Differential abundance (taxonomy) heatmap
+
+Specify the comparison groups of samples.
+
+```{r}
+
+pre<-c("001_pre","002_pre","005_pre","006_pre","007_pre","008_pre","009_pre","010_pre","011_pre","012_pre")
+post<-c("001_post","002_post","005_post","006_post","007_post","008_post","009_post","010_post","011_post","012_post")
+
+metR_pre<-c("001_pre","002_pre","005_pre","007_pre","009_pre","011_pre")
+metR_post<-c("001_post","002_post","005_post","007_post","009_post","011_post")
+
+metNR_pre<-c("006_pre","008_pre","010_pre","012_pre")
+metNR_post<-c("006_post","008_post","010_post","012_post")
+```
+
+Perform an aldex2 t-test and effect size test of paired pre- vs post-intervention samples.
+
+```{r message = FALSE, warning = FALSE}
+aldex.in<-d[,c(pre, post)]
+conds<-c(rep("pre", length(pre)), rep("post", length(post)))
+x <- aldex.clr(aldex.in, conds, mc.samples=128, verbose=TRUE)
+x.tt <- aldex.ttest(x, paired.test=TRUE)
+x.effect <- aldex.effect(x)
+
+#merge the data
+x.all <- data.frame(x.tt, x.effect)
+
+tax<-as.data.frame(tax)
+```
+
+```{r}
+#merge taxonomic information
+x.all.tax.sv <- merge(x.all, dplyr::select(tax, 2:7), by = "row.names", all.y = FALSE)
+#write a .txt file with the results
+#write.table(x.all.tax, file="aldex_output/pre_vspost_SV.txt", sep="\t", quote=F, col.names=NA)
+```
+
+Make the heatmap
+
+```{r}
+#aldex_out<-read.table("aldex_output/pre_vspost_SV.txt", sep="\t", quote="", header=T, row.names=1)
+#OR
+aldex_out<-x.all.tax.sv
+filt_effect <- aldex_out[abs(aldex_out$effect) > 0.5, ]
+
+# relative abundance
+abun <- apply(aldex.in, 2, function(x) {x/sum(x)})
+colSums(abun) #check all sum to 1
+
+#transpose to samples as rows
+abun.t<-t(abun)
+```
+
+```{r message = FALSE, warning = FALSE}
+d.czm <- cmultRepl(abun.t,  label=0, method="CZM", z.warning = 0.95)
+```
+
+```{r}
+# The table needs to be transposed again (samples as COLUMNS)
+d.clr <- t(apply(d.czm, 1, function(x){log(x) - mean(log(x))}))
+
+#only get the differentially abundant SV
+d.clr.diff<-d.clr[,colnames(d.clr) %in% filt_effect$Row.names]
+
+clr_melt<-melt(d.clr.diff)
+colnames(clr_melt)<-c("sample","SV","clr")
+
+#add a participant and timepoint column
+clr_melt$participant<-gsub("_.*","", clr_melt$sample)
+clr_melt$timepoint<-gsub(".*_","",clr_melt$sample)
+clr_melt$timepoint<-gsub("pre","1pre",clr_melt$timepoint)
+
+filt_effect <- filt_effect %>%
+  mutate(bugnames = ifelse(!is.na(Species), paste(Row.names, Genus, Species, sep = "_"), paste(Row.names, Genus, sep = "_")))
+
+filt_effect<- filt_effect %>% arrange(effect)
+
+clr_final <- clr_melt %>%
+  left_join(filt_effect %>% dplyr::select(Row.names, bugnames), by = c("SV" = "Row.names"))
+
+clr_final <- clr_final %>%
+  left_join(filt_effect %>% dplyr::select(Row.names, effect), by =c("SV"="Row.names"))
+
+clr_final$effect<-clr_final$effect * -1
+clr_final <- clr_final %>%
+  arrange(effect) %>%
+  mutate(bugnames = factor(bugnames, levels = unique(bugnames)))  # Preserve order in factor
+
+filt_effect$effect<-filt_effect$effect *-1
+
+filt_effect<-filt_effect %>% mutate(bugnames = factor(bugnames, levels = unique(bugnames)))
+```
+
+Make the plot
+
+```{r}
+heat <- ggplot(clr_final, aes(x = timepoint, y = bugnames, fill = clr)) +
+  geom_tile() +
+  facet_grid(~participant, scales = "free_x") +
+  scale_fill_gradientn(
+    colors = rev(c("#98033A","#D43747","#F76340","#FEA55C","#FEFFBA","white","#9CDA9C","#267AB1","#5a78b5","#554394")),
+    values = c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1), # Keeping the same values
+    limits = range(clr_final$clr)) +
+  scale_x_discrete(labels=c("1pre"="Pre", "post"="Post")) +
+  theme_bw() +
+  theme(axis.title = element_blank(), 
+        legend.position = c(-0.2, 1.05), 
+        legend.direction = "horizontal",
+        axis.text.y=element_text(face="italic"),
+        axis.text.x = element_text(size=8))
+heat
+```
+
+This heatmap will look slightly different every time a new aldex ttest and effect size test is run, because the results are based on estimates.
+
+```{r}
+bars <- ggplot(filt_effect, aes(x = effect, y = bugnames, fill = ifelse(effect > 0.5, "salmon", "#5a78b5"))) +
+  geom_col() +
+  scale_fill_identity() +  # Directly apply colors without expecting discrete categories
+  geom_text(aes(label = round(effect, 2), x = ifelse(effect > 0.5, 0.1, -0.1)),  # Position text dynamically
+            color = "black", hjust = ifelse(filt_effect$effect > 0.5, 0, 1), size = 3) +  # Adjust text alignment
+  scale_y_discrete(limits = rev(unique(filt_effect$bugnames))) +  # Keep order consistent with heatmap
+  theme_minimal() +
+  xlab("Effect Size") +
+  theme(
+    axis.text.y = element_blank(),  # Hide y-axis text to avoid duplication
+    axis.title.y = element_blank(),
+    axis.text.x = element_blank(),
+    panel.grid = element_blank())
+
+bars
+
+final_plot<- heat + bars + plot_layout(widths = c(4, 1))
+final_plot
+```
+
+### 3B. Differential abundanct of EC numbers
+
+Perform an aldex2 t-test and effect size test of paired pre- vs post-intervention samples on microbial functional output tables.
+
+First up, EC numbers.
+
+```{r message = FALSE, warning = FALSE}
+ec<-read.table("data/pred_metagenome_unstrat_EC.tsv", sep="\t", quote="", check.names=F, header=T, row.names=1, comment.char="")
+ec<-round(ec, digits=0)
+
+# pre vs post all samples
+aldex.in.ec<-ec[,c(pre, post)]
+conds<-c(rep("pre", length(pre)), rep("post", length(post)))
+x.ec <- aldex.clr(aldex.in.ec, conds, mc.samples=128, verbose=TRUE)
+x.tt.ec <- aldex.ttest(x.ec, paired.test=TRUE)
+x.effect.ec <- aldex.effect(x.ec)
+
+#merge the data
+x.all.ec <- data.frame(x.tt.ec, x.effect.ec)
+#write.table(x.all.ec, file="aldex_output/prevspost_ECnumbers.txt", sep='\t', quote=F)
+```
+
+Next up, KOs.
+
+```{r message = FALSE, warning = FALSE}
+ko<-read.table("data/pred_metagenome_unstrat_KO.tsv", sep="\t", quote="", check.names=F, header=T, row.names=1, comment.char="")
+ko<-round(ko, digits=0)
+
+# pre vs post all samples
+aldex.in.ko<-ko[,c(pre, post)]
+conds<-c(rep("pre", length(pre)), rep("post", length(post)))
+x.ko <- aldex.clr(aldex.in.ko, conds, mc.samples=128, verbose=TRUE)
+x.tt.ko <- aldex.ttest(x.ko, paired.test=TRUE)
+x.effect.ko <- aldex.effect(x.ko)
+
+#merge the data
+x.all.ko <- data.frame(x.tt.ko, x.effect.ko)
+#write.table(x.all.ko, file="aldex_output/prevspost_KOnumbers.txt", sep='\t', quote=F)
+```
+
+And finally, at the functional pathway level.
+
+```{r message = FALSE, warning = FALSE}
+p<-read.table("data/path_abun_unstrat.tsv", sep="\t", quote="", check.names=F, header=T, row.names=1, comment.char="")
+p<-round(p, digits=0)
+
+# pre vs post all samples
+aldex.in.p<-p[,c(pre, post)]
+conds<-c(rep("pre", length(pre)), rep("post", length(post)))
+x.p <- aldex.clr(aldex.in.p, conds, mc.samples=128, verbose=TRUE)
+x.tt.p <- aldex.ttest(x.p, paired.test=TRUE)
+x.effect.p <- aldex.effect(x.p)
+
+#merge the data
+x.all.p <- data.frame(x.tt.p, x.effect.p)
+#write.table(x.all.p, file="aldex_output/prevspost_pathways.txt", sep='\t', quote=F)
+```
+
+Now lets make some volcano plots.
+
+```{r}
+x.all.ec$effect<-x.all.ec$effect * -1
+ec_num<-x.all.ec
+
+#colours based on significance!
+# add a column
+ec_num$diffexpressed <- "NO"
+# if log2Foldchange > 0.5 and pvalue < 0.05, set as "UP" 
+ec_num$diffexpressed[ec_num$effect > 0.5] <- "UP"
+# if log2Foldchange < -0.6 and pvalue < 0.05, set as "DOWN"
+ec_num$diffexpressed[ec_num$effect < -0.5] <- "DOWN"
+
+#labels based on significance!
+ec_num$delabel <- NA
+#ec_num$delabel[ec_num$diffexpressed != "NO"] <- rownames(ec_num)[ec_num$diffexpressed != "NO"]
+ec_num$delabel[ec_num$effect > 0.65 | ec_num$effect < -0.6] <- rownames(ec_num)[ec_num$effect > 0.65 | ec_num$effect < -0.65]
+
+ec_volcano <- ggplot(data=ec_num, aes(x=effect, y=-log10(wi.ep), col=diffexpressed)) +
+  geom_point(aes(alpha = ifelse(diffexpressed == "NO", 0.5, 1))) +
+  theme_bw() +
+  scale_color_manual(values=c("#5a78b5", "black", "salmon")) +
+  theme(legend.position="none") +
+  labs(x="Effect Size", y="Wilcoxon P (-log10)") +
+  geom_text_repel(aes(label = delabel), size = 3, max.overlaps = 22)
+ec_volcano	
+```
+
+### 3C Differential abundance of KOs
+```{r}
+x.all.ko$effect<-x.all.ko$effect * -1
+ko_num<-x.all.ko
+
+#colours based on significance!
+# add a column
+ko_num$diffexpressed <- "NO"
+# if log2Foldchange > 0.5 and pvalue < 0.05, set as "UP" 
+ko_num$diffexpressed[ko_num$effect > 0.5] <- "UP"
+# if log2Foldchange < -0.6 and pvalue < 0.05, set as "DOWN"
+ko_num$diffexpressed[ko_num$effect < -0.5] <- "DOWN"
+
+#labels based on significance!
+ko_num$delabel <- NA
+#ko_num$delabel[ko_num$diffexpressed != "NO"] <- rownames(ko_num)[ko_num$diffexpressed != "NO"]
+ko_num$delabel[ko_num$effect > 0.65 | ko_num$effect < -0.6] <- rownames(ko_num)[ko_num$effect > 0.65 | ko_num$effect < -0.65]
+
+ko_volcano <- ggplot(data=ko_num, aes(x=effect, y=-log10(wi.ep), col=diffexpressed)) +
+  geom_point(aes(alpha = ifelse(diffexpressed == "NO", 0.5, 1))) +
+  theme_bw() +
+  scale_color_manual(values=c("#5a78b5", "black", "salmon")) +
+  theme(legend.position="none") +
+  labs(x="Effect Size", y="Wilcoxon P (-log10)") +
+  geom_text_repel(aes(label = delabel), size = 3, max.overlaps = 22)
+ko_volcano
+```
+
+### 3D-H. Differential abundance of functional pathways
+
+```{r}
+# relative abundance
+p.f <- apply(p, 2, function(x) {x/sum(x)})
+colSums(p.f) #check all sum to 1
+
+to.remove<-c("003_post","004_pre","DNA_BLANK2","PCR_BLANK2")
+
+p.f2<-p.f[,!colnames(p.f) %in% to.remove]
+
+#transpose to samples as rows
+p.f3<-t(p.f2)
+```
+```{r message = FALSE, warning = FALSE}
+#samples must be as rows
+p.czm <- cmultRepl(p.f3,  label=0, method="CZM")
+```
+
+```{r}
+p.clr <- t(apply(p.czm, 1, function(x){log(x) - mean(log(x))}))
+
+meta<-read.table("data/metadata.txt", sep="\t", quote="", check.names=F, header=T, row.names=1, comment.char="")
+
+p.clr.m<-merge(p.clr, meta, by=0, all=FALSE)
+p.clr.m$participant<-as.factor(p.clr.m$participant)
+
+p1 <- ggplot(p.clr.m, aes(x = timepoint, y = p.clr.m[[163]], group = participant, colour = participant)) +
+  geom_point(aes(fill = participant), size = 3, shape = 21, stroke = 1, alpha = 0.5) +
+  geom_line(aes(group = participant), size = 1) +
+  scale_color_brewer(palette = "Paired") +
+  scale_fill_brewer(palette = "Paired") +
+  labs(title = "PWY-5913", y = "CLR relative abundance") +
+  scale_x_discrete(labels = c("Pre", "Post")) +
+  theme_bw() +
+  annotate("text", x = 1.5, y = 1.25, label = "ES = -0.65", size = 3) +
+  theme(axis.title.x = element_blank(), legend.position = "none", plot.title = element_text(size=10))
+
+p2 <- ggplot(p.clr.m, aes(x = timepoint, y = p.clr.m[[250]], group = participant, colour = participant)) +
+  geom_point(aes(fill = participant), size = 3, shape = 21, stroke = 1, alpha = 0.5) +
+  geom_line(aes(group = participant), size = 1) +
+  scale_color_brewer(palette = "Paired") +
+  scale_fill_brewer(palette = "Paired") +
+  labs(title = "PWY-7328", y = "CLR relative abundance") +
+  scale_x_discrete(labels = c("Pre", "Post")) +
+  annotate("text", x = 1.5, y = 0.5, label = "ES = -0.61", size = 3) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(), legend.position = "none", plot.title = element_text(size=10))
+
+p3 <- ggplot(p.clr.m, aes(x = timepoint, y = p.clr.m[[108]], group = participant, colour = participant)) +
+  geom_point(aes(fill = participant), size = 3, shape = 21, stroke = 1, alpha = 0.5) +
+  geom_line(aes(group = participant), size = 1) +
+  scale_color_brewer(palette = "Paired") +
+  scale_fill_brewer(palette = "Paired") +
+  labs(title = "PWY-3781", y = "CLR relative abundance") +
+  scale_x_discrete(labels = c("Pre", "Post")) +
+  annotate("text", x = 1.5, y = 0.5, label = "ES = -0.58", size = 3) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(), legend.position = "none", plot.title = element_text(size=10))
+
+p4 <- ggplot(p.clr.m, aes(x = timepoint, y = p.clr.m[[80]], group = participant, colour = participant)) +
+  geom_point(aes(fill = participant), size = 3, shape = 21, stroke = 1, alpha = 0.5) +
+  geom_line(aes(group = participant), size = 1) +
+  scale_color_brewer(palette = "Paired") +
+  scale_fill_brewer(palette = "Paired") +
+  labs(title = "P125-PWY", y = "CLR relative abundance") +
+  scale_x_discrete(labels = c("Pre", "Post")) +
+  annotate("text", x = 1.5, y = 0.5, label = "ES = -0.57", size = 3) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(), legend.position = "none", plot.title = element_text(size=10))
+
+p5 <- ggplot(p.clr.m, aes(x = timepoint, y = p.clr.m[[64]], group = participant, colour = participant)) +
+  geom_point(aes(fill = participant), size = 3, shape = 21, stroke = 1, alpha = 0.5) +
+  geom_line(aes(group = participant), size = 1) +
+  scale_color_brewer(palette = "Paired") +
+  scale_fill_brewer(palette = "Paired") +
+  labs(title = "LACTOSECAT-PWY", y = "CLR relative abundance") +
+  scale_x_discrete(labels = c("Pre", "Post")) +
+  annotate("text", x = 1.5, y = 0.5, label = "ES = -0.55", size = 3) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(), legend.position = "none", plot.title = element_text(size=10))
+
+```
+
+Make the final figure panel including Figure 3 B-H
+
+```{r message = FALSE, warning = FALSE}
+
+layout <- "
+AAAACDE
+BBBBFG#
+"
+
+ec_volcano + ko_volcano + p1 + p2 + p3 + p4 + p5 +
+  plot_layout(design = layout)
