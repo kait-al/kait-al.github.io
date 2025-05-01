@@ -715,7 +715,7 @@ final_plot<- heat + bars + plot_layout(widths = c(4, 1))
 final_plot
 ```
 
-### 3B. Differential abundanct of EC numbers
+### 3B. Differential abundance of EC numbers
 
 Perform an aldex2 t-test and effect size test of paired pre- vs post-intervention samples on microbial functional output tables.
 
