@@ -1,8 +1,8 @@
 	L_pri	R_pri	DNA_conc	DNA_ext_plate	sample_well	is_control	participant	timepoint	age	sex	gender	QIDS	QIDS_percent_change	QIDS_improvement	OASIS	OASIS_percent_change	OASIS_improvement	BP_systolic	BP_diastolic	weight	BMI	tot_cholesterol	HDL	LDL	nonHDL	triglycerides	tot_cholesterol_percent_change	HDL_percent_change	LDL_percent_change	nonHDL_percent_change	triglycerides_percent_change	tot_cholesterol_improvement	HDL_improvement	LDL_improvement	nonHDL_improvement	triglycerides_improvement	metabolic_responder	anx_dep_responder
 001_pre	L1	R11	40.7	1	C9	FALSE	1	1_pre	27	F	W	10	NA	NA	7	NA	NA	135	88	97.87	33.08	6.49	1.32	3.88	5.17	3.09	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	R	R
 001_post	L8	R10	34.84	1	G8	FALSE	1	2_post	27	F	W	8	-0.2	1	3	-0.57	1	140	81	99.6	34.06	4.75	1.25	2.58	3.5	2.34	-0.27	-0.05	-0.34	-0.32	-0.24	2	0	2	2	1	R	R
-002_pre	L8	R9	37.73	1	F10	FALSE	2	1_pre	32	F	W	17	NA	NA	11	NA	NA	117	86	93.07	35.18	7.91	1.13	4.62	6.78	4.74	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	R	NR
-002_post	L3	R9	32.42	1	F5	FALSE	2	2_post	32	F	W	12	-0.29	1	10	-0.09	1	125	81	92.65	35.74	7.14	1.37	4.25	5.77	3.52	-0.1	0.21	-0.08	-0.15	-0.26	1	2	0	1	1	R	NR
+002_pre	L8	R9	37.73	1	F10	FALSE	2	1_pre	32	F	W	17	NA	NA	11	NA	NA	117	86	93.07	35.18	7.91	1.13	4.62	6.78	4.74	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NR	NR
+002_post	L3	R9	32.42	1	F5	FALSE	2	2_post	32	F	W	12	-0.29	1	10	-0.09	1	125	81	92.65	35.74	7.14	1.37	4.25	5.77	3.52	-0.1	0.21	-0.08	-0.15	-0.26	1	2	0	1	1	NR	NR
 003_pre	L2	R9	32.51	1	C1	FALSE	3	1_pre	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA
 004_pre	L6	R9	31.32	1	D1	FALSE	4	1_pre	23	F	W	5	NA	NA	1	NA	NA	116	82	83.33	32.15	4.6	1.48	2.7	3.12	1	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA
 004_post	NA	NA	NA	NA	NA	NA	4	2_post	23	F	W	5	NA	NA	0	NA	NA	114	74	80.8	31.2	4.5	1.77	2.09	NA	1.64	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	R	NR

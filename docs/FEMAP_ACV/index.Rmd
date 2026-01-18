@@ -1,7 +1,7 @@
 ---
 title: 'FEMAP ACV Study: Microbiota Analysis'
 author: "Kait Al"
-date: "2025-05-01"
+date: "2026-01-17"
 output: 
   html_document:
     toc: true
@@ -22,12 +22,15 @@ This document summarizes the microbiota analyses for the FEMAP+ACV study. There 
 
 ```{r message = FALSE, warning = FALSE}
 library(ALDEx2)
+library(ARTool)
+library(broom)
 library(dplyr)
 library(forcats)
 library(ggplot2)
 library(ggrepel)
 library(gridExtra)
 library(knitr)
+library(Maaslin2)
 library(microbiome)
 library(patchwork)
 library(phyloseq)
@@ -95,15 +98,33 @@ Now lets do some stats to compare pairwise between pre and post samples
 ```{r}
 # pairwise t-tests
 # Select columns to test
-columns_to_test <- colnames(div_merge2)[2:17]
+cols_to_test <- c(2,3,5, 7:14, 16:17)
+columns_to_test <- names(div_merge2)[cols_to_test]
 
-# Initialize results dataframe
-results <- data.frame(Variable = character(), t_statistic = numeric(), p_value = numeric(), stringsAsFactors = FALSE)
+tp_pre  <- grep("pre$",  unique(div_merge2$timepoint),  value = TRUE)
+tp_post <- grep("post$", unique(div_merge2$timepoint), value = TRUE)
 
-# Perform pairwise t-tests
+results <- data.frame()
+
 for (col in columns_to_test) {
-  test_result <- t.test(div_merge2[[col]] ~ div_merge2$timepoint, paired = TRUE)
-  results <- rbind(results, data.frame(Variable = col, t_statistic = test_result$statistic, p_value = test_result$p.value))
+  pre_df  <- div_merge2[div_merge2$timepoint == tp_pre,  c("participant", col)]
+  post_df <- div_merge2[div_merge2$timepoint == tp_post, c("participant", col)]
+  merged <- merge(pre_df, post_df, by = "participant", suffixes = c("_pre", "_post"))
+  pre_vals  <- merged[[paste0(col, "_pre")]]
+  post_vals <- merged[[paste0(col, "_post")]]
+
+  # paired Wilcoxon signed-rank test
+  test_result <- wilcox.test(pre_vals, post_vals, paired = TRUE, exact = FALSE)
+
+  # save results
+  results <- rbind(
+    results,
+    data.frame(
+      Variable = col,
+      W_statistic = test_result$statistic,
+      p_value = test_result$p.value
+    )
+  )
 }
 
 kable(results)
@@ -114,34 +135,44 @@ So there are no significant trends in alpha diversity pre- vs. post-intervention
 What about if we take into account the metabolic responder status? We can do this with a 2-way ANOVA.
 
 ```{r}
-# perform a 2-way anova
+# perform an Aligned Rank Transform (nonparametric alternative to 2-way ANOVA)
 # Create the 'participant_id' column to group by
 div_merge2$participant_id <- sub("_.*", "", div_merge2$Row.names)
 div_merge2$participant_id<-as.factor(div_merge2$participant_id)
+div_merge2$timepoint <- as.factor(div_merge2$timepoint)
+div_merge2$metabolic_responder <- as.factor(div_merge2$metabolic_responder)
 
-aov_shan<-aov(Shannon ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
-summary(aov_shan)
+art_aov_results <- data.frame()
+
+for (col in columns_to_test) {
+  f <- as.formula(paste0(col, " ~ timepoint * metabolic_responder + Error(participant_id)"))
+  art_model <- art(f, data = div_merge2)
+  anova_res <- anova(art_model)
+  anova_df <- tidy(anova_res)
+  anova_df <- anova_df %>% filter(Term == "timepoint:metabolic_responder")
+  anova_df$Metric <- col
+  anova_df$term <- NULL
+  anova_df <- anova_df %>% relocate(Metric)
+  art_aov_results <- rbind(art_aov_results, anova_df)
+}
+kable(art_aov_results)
 ```
 
-Use 'summary(aov_metric)' to view the results for any of the following tests.
+Several metrics have P \< 0.05, so there may be a responder-specific trend in alpha diversity changes to the intervention.
 
-```{r message = FALSE, warning = FALSE}
-aov_obs<-aov(Observed ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
-aov_chao<-aov(Chao1 ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
-aov_ace<-aov(ACE ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
-aov_simp<-aov(Simpson ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
-aov_invsimp<-aov(InvSimpson ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
-aov_fisher<-aov(Fisher ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
-aov_dbp<-aov(dbp ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
-aov_dmn<-aov(dmn ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
-aov_abs<-aov(absolute ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
-aov_rel<-aov(relative ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
-aov_simp2<-aov(simpson ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
-aov_core<-aov(core_abundance ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
-aov_gini<-aov(gini ~ timepoint * metabolic_responder + Error(participant_id/(timepoint * metabolic_responder)), data=div_merge2)
+```{r}
+fisher<-ggplot(div_merge2, aes(x=timepoint, y=Fisher, group = metabolic_responder, colour = metabolic_responder)) +
+  geom_point(aes(fill=metabolic_responder), size=4, shape=21, stroke=1, alpha=0.5) +
+  geom_line(aes(group = participant), size = 1) +
+  geom_text_repel(aes(label=participant), size=3) +
+  scale_color_brewer(palette="Paired") +
+  scale_fill_brewer(palette="Paired") +
+  labs(y="Fisher's alpha ") +
+  scale_x_discrete(labels = c("Pre", "Post")) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(), axis.title=element_text(size=10))
+fisher
 ```
-
-Several metrics have P < 0.1, so there may be a responder-specific trend in alpha diversity changes to the intervention.
 
 ### 4. Filter the counts tables for downstream analyses
 
@@ -162,7 +193,7 @@ ct<-unite(ct,"tax.vector", Kingdom:Species, sep=':', remove=TRUE)
 dim(ct)
 ```
 
-Check to see how many samples contain > 1000 total reads.
+Check to see how many samples contain \> 1000 total reads.
 
 ```{r}
 ct2<-ct[,1:ncol(ct)-1]
@@ -172,7 +203,7 @@ dim(d.s)
 ncol(ct2)-ncol(d.s)
 ```
 
-So all the samples have > 1000 reads. Now lets apply some frequency-based cutoffs.
+So all the samples have \> 1000 reads. Now lets apply some frequency-based cutoffs.
 
 ```{r}
 d.freq <- apply(d.s, 2, function(x) {x/sum(x)})
@@ -225,7 +256,7 @@ d_filt_freq$tax.vector = ct$tax.vector[match(rownames(d_filt_freq), rownames(ct)
 #write.table(d_filt_freq, file="data/abundance_01abun_100filt.txt", sep='\t', quote=F)
 ```
 
-These files will be the one we primarily use downstream.
+These files will be the ones we primarily use downstream.
 
 # Figures
 
@@ -580,18 +611,11 @@ grid.arrange(bars, p, aitch_plot, dist_comp, shan, core, layout_matrix=lay)
 
 ### 3A. Differential abundance (taxonomy) heatmap
 
-Specify the comparison groups of samples.
+Specify the comparison groups of samples:
 
 ```{r}
-
 pre<-c("001_pre","002_pre","005_pre","006_pre","007_pre","008_pre","009_pre","010_pre","011_pre","012_pre")
 post<-c("001_post","002_post","005_post","006_post","007_post","008_post","009_post","010_post","011_post","012_post")
-
-metR_pre<-c("001_pre","002_pre","005_pre","007_pre","009_pre","011_pre")
-metR_post<-c("001_post","002_post","005_post","007_post","009_post","011_post")
-
-metNR_pre<-c("006_pre","008_pre","010_pre","012_pre")
-metNR_post<-c("006_post","008_post","010_post","012_post")
 ```
 
 Perform an aldex2 t-test and effect size test of paired pre- vs post-intervention samples.
@@ -605,7 +629,6 @@ x.effect <- aldex.effect(x)
 
 #merge the data
 x.all <- data.frame(x.tt, x.effect)
-
 tax<-as.data.frame(tax)
 ```
 
@@ -803,6 +826,7 @@ ec_volcano
 ```
 
 ### 3C Differential abundance of KOs
+
 ```{r}
 x.all.ko$effect<-x.all.ko$effect * -1
 ko_num<-x.all.ko
@@ -844,6 +868,7 @@ p.f2<-p.f[,!colnames(p.f) %in% to.remove]
 #transpose to samples as rows
 p.f3<-t(p.f2)
 ```
+
 ```{r message = FALSE, warning = FALSE}
 #samples must be as rows
 p.czm <- cmultRepl(p.f3,  label=0, method="CZM")
@@ -927,4 +952,469 @@ ec_volcano + ko_volcano + p1 + p2 + p3 + p4 + p5 +
   plot_layout(design = layout)
 ```
 
-<div class="tocify-extend-page" data-unique="tocify-extend-page" style="height: 598px;"></div>
+## Supplementary Figures
+
+### Supplementary Figure 1. Differentially abundant taxa and functional features between metabolic responders and non-responders.
+
+Specify the sample comparison groups:
+
+```{r}
+metR_pre<-c("001_pre","005_pre","007_pre","009_pre","011_pre")
+metR_post<-c("001_post","005_post","007_post","009_post","011_post")
+
+metNR_pre<-c("002_pre","006_pre","008_pre","010_pre","012_pre")
+metNR_post<-c("002_post","006_post","008_post","010_post","012_post")
+```
+
+Perform an aldex2 t-test and effect size test of un paired pre-intervention R vs NR samples.
+
+First, taxa (SV).
+```{r message = FALSE, warning = FALSE}
+aldex.in<-d[,c(metR_pre, metNR_pre)]
+conds<-c(rep("metR_pre", length(metR_pre)), rep("metNR_pre", length(metNR_pre)))
+x <- aldex.clr(aldex.in, conds, mc.samples=128, verbose=TRUE)
+x.tt <- aldex.ttest(x, paired.test=TRUE)
+x.effect <- aldex.effect(x)
+
+x.all <- data.frame(x.tt, x.effect) #merge the data
+tax<-as.data.frame(tax)
+x.all.tax.sv.pre <- merge(x.all, dplyr::select(tax, 2:7), by = "row.names", all.y = FALSE)
+
+#write.table(x.all.tax.sv.pre, file="aldex_output/metR_vsNR_preSV2.txt", sep="\t", quote=F, col.names=NA)
+```
+
+Make the volcano plot based on these comparisons.
+
+```{r}
+pre.sv<-x.all.tax.sv.pre
+# add a column for labels based on significance
+pre.sv$diffexpressed <- "NO"
+# if log2Foldchange > 0.5 and pvalue < 0.05, set as "UP" 
+pre.sv$diffexpressed[pre.sv$effect > 0.5] <- "UP"
+# if log2Foldchange < -0.6 and pvalue < 0.05, set as "DOWN"
+pre.sv$diffexpressed[pre.sv$effect < -0.5] <- "DOWN"
+pre.sv$delabel <- NA
+rownames(pre.sv) <-pre.sv[,1]
+pre.sv$delabel[pre.sv$diffexpressed != "NO"] <- rownames(pre.sv)[pre.sv$diffexpressed != "NO"]
+
+pre.sv.v <- ggplot(data=pre.sv, aes(x=effect, y=-log10(wi.ep), col=diffexpressed)) +
+  geom_point(aes(alpha = ifelse(diffexpressed == "NO", 0.5, 1))) +
+  theme_bw() +
+  scale_color_manual(values=c("#5a78b5", "black", "salmon")) +
+  theme(legend.position="none") +
+  labs(x="Effect Size", y="Wilcoxon P (-log10)")
+```
+
+```{r message = FALSE, warning = FALSE}
+aldex.in<-d[,c(metR_post, metNR_post)]
+conds<-c(rep("metR_post", length(metR_post)), rep("metNR_post", length(metNR_post)))
+x <- aldex.clr(aldex.in, conds, mc.samples=128, verbose=TRUE)
+x.tt <- aldex.ttest(x, paired.test=TRUE)
+x.effect <- aldex.effect(x)
+
+x.all <- data.frame(x.tt, x.effect) #merge the data
+tax<-as.data.frame(tax)
+x.all.tax.sv.post <- merge(x.all, dplyr::select(tax, 2:7), by = "row.names", all.y = FALSE)
+
+#write.table(x.all.tax.sv.post, file="metR_vsNR_postSV2.txt", sep="\t", quote=F, col.names=NA)
+```
+```{r}
+post.sv<-x.all.tax.sv.post
+# add a column for labels based on significance
+post.sv$diffexpostssed <- "NO"
+# if log2Foldchange > 0.5 and pvalue < 0.05, set as "UP" 
+post.sv$diffexpostssed[post.sv$effect > 0.5] <- "UP"
+# if log2Foldchange < -0.6 and pvalue < 0.05, set as "DOWN"
+post.sv$diffexpostssed[post.sv$effect < -0.5] <- "DOWN"
+post.sv$delabel <- NA
+rownames(post.sv) <-post.sv[,1]
+post.sv$delabel[post.sv$diffexpostssed != "NO"] <- rownames(post.sv)[post.sv$diffexpostssed != "NO"]
+
+post.sv.v <- ggplot(data=post.sv, aes(x=effect, y=-log10(wi.ep), col=diffexpostssed)) +
+  geom_point(aes(alpha = ifelse(diffexpostssed == "NO", 0.5, 1))) +
+  theme_bw() +
+  scale_color_manual(values=c("#5a78b5", "black", "salmon")) +
+  theme(legend.position="none") +
+  labs(x="Effect Size", y="Wilcoxon P (-log10)")
+```
+
+Repeat with functional EC values.
+
+```{r message = FALSE, warning = FALSE}
+aldex.in<-ec[,c(metR_pre, metNR_pre)]
+conds<-c(rep("metR_pre", length(metR_pre)), rep("metNR_pre", length(metNR_pre)))
+x <- aldex.clr(aldex.in, conds, mc.samples=128, verbose=TRUE)
+x.tt <- aldex.ttest(x, paired.test=TRUE)
+x.effect <- aldex.effect(x)
+
+pre.ec <- data.frame(x.tt, x.effect) #merge the data
+
+#write.table(pre.ec, file="metR_vsNR_preEC2.txt", sep="\t", quote=F, col.names=NA)
+```
+```{r}
+# add a column for labels based on significance
+pre.ec$diffexpressed <- "NO"
+# if log2Foldchange > 0.5 and pvalue < 0.05, set as "UP" 
+pre.ec$diffexpressed[pre.ec$effect > 0.5] <- "UP"
+# if log2Foldchange < -0.6 and pvalue < 0.05, set as "DOWN"
+pre.ec$diffexpressed[pre.ec$effect < -0.5] <- "DOWN"
+pre.ec$delabel <- NA
+pre.ec$delabel[pre.ec$diffexpressed != "NO"] <- rownames(pre.ec)[pre.ec$diffexpressed != "NO"]
+
+pre.ec.v <- ggplot(data=pre.ec, aes(x=effect, y=-log10(wi.ep), col=diffexpressed)) +
+  geom_point(aes(alpha = ifelse(diffexpressed == "NO", 0.5, 1))) +
+  theme_bw() +
+  scale_color_manual(values=c("#5a78b5", "black", "salmon")) +
+  theme(legend.position="none") +
+  labs(x="Effect Size", y="Wilcoxon P (-log10)")
+```
+
+```{r message = FALSE, warning = FALSE}
+aldex.in<-ec[,c(metR_post, metNR_post)]
+conds<-c(rep("metR_post", length(metR_post)), rep("metNR_post", length(metNR_post)))
+x <- aldex.clr(aldex.in, conds, mc.samples=128, verbose=TRUE)
+x.tt <- aldex.ttest(x, paired.test=TRUE)
+x.effect <- aldex.effect(x)
+
+post.ec <- data.frame(x.tt, x.effect) #merge the data
+
+#write.table(post.ec, file="metR_vsNR_postEC2.txt", sep="\t", quote=F, col.names=NA)
+```
+```{r}
+# add a column for labels based on significance
+post.ec$diffexpressed <- "NO"
+# if log2Foldchange > 0.5 and pvalue < 0.05, set as "UP" 
+post.ec$diffexpressed[post.ec$effect > 0.5] <- "UP"
+# if log2Foldchange < -0.6 and pvalue < 0.05, set as "DOWN"
+post.ec$diffexpressed[post.ec$effect < -0.5] <- "DOWN"
+post.ec$delabel <- NA
+post.ec$delabel[post.ec$diffexpressed != "NO"] <- rownames(post.ec)[post.ec$diffexpressed != "NO"]
+
+post.ec.v <- ggplot(data=post.ec, aes(x=effect, y=-log10(wi.ep), col=diffexpressed)) +
+  geom_point(aes(alpha = ifelse(diffexpressed == "NO", 0.5, 1))) +
+  theme_bw() +
+  scale_color_manual(values=c("#5a78b5", "black", "salmon")) +
+  theme(legend.position="none") +
+  labs(x="Effect Size", y="Wilcoxon P (-log10)")
+```
+
+Repeat with functional pathways.
+
+```{r message = FALSE, warning = FALSE}
+aldex.in<-p[,c(metR_pre, metNR_pre)]
+conds<-c(rep("metR_pre", length(metR_pre)), rep("metNR_pre", length(metNR_pre)))
+x <- aldex.clr(aldex.in, conds, mc.samples=128, verbose=TRUE)
+x.tt <- aldex.ttest(x, paired.test=TRUE)
+x.effect <- aldex.effect(x)
+
+pre.paths <- data.frame(x.tt, x.effect) #merge the data
+
+#write.table(pre.paths, file="metR_vsNR_prePaths2.txt", sep="\t", quote=F, col.names=NA)
+```
+```{r}
+# add a column for labels based on significance
+pre.paths$diffexpressed <- "NO"
+# if log2Foldchange > 0.5 and pvalue < 0.05, set as "UP" 
+pre.paths$diffexpressed[pre.paths$effect > 0.5] <- "UP"
+# if log2Foldchange < -0.6 and pvalue < 0.05, set as "DOWN"
+pre.paths$diffexpressed[pre.paths$effect < -0.5] <- "DOWN"
+pre.paths$delabel <- NA
+pre.paths$delabel[pre.paths$diffexpressed != "NO"] <- rownames(pre.paths)[pre.paths$diffexpressed != "NO"]
+
+pre.paths.v <- ggplot(data=pre.paths, aes(x=effect, y=-log10(wi.ep), col=diffexpressed)) +
+  geom_point(aes(alpha = ifelse(diffexpressed == "NO", 0.5, 1))) +
+  theme_bw() +
+  scale_color_manual(values=c("#5a78b5", "black", "salmon")) +
+  theme(legend.position="none") +
+  labs(x="Effect Size", y="Wilcoxon P (-log10)")
+```
+
+```{r message = FALSE, warning = FALSE}
+aldex.in<-p[,c(metR_post, metNR_post)]
+conds<-c(rep("metR_post", length(metR_post)), rep("metNR_post", length(metNR_post)))
+x <- aldex.clr(aldex.in, conds, mc.samples=128, verbose=TRUE)
+x.tt <- aldex.ttest(x, paired.test=TRUE)
+x.effect <- aldex.effect(x)
+
+post.paths <- data.frame(x.tt, x.effect) #merge the data
+
+#write.table(post.paths, file="metR_vsNR_postPaths2.txt", sep="\t", quote=F, col.names=NA)
+```
+```{r}
+# add a column for labels based on significance
+post.paths$diffexpressed <- "NO"
+# if log2Foldchange > 0.5 and pvalue < 0.05, set as "UP" 
+post.paths$diffexpressed[post.paths$effect > 0.5] <- "UP"
+# if log2Foldchange < -0.6 and pvalue < 0.05, set as "DOWN"
+post.paths$diffexpressed[post.paths$effect < -0.5] <- "DOWN"
+post.paths$delabel <- NA
+post.paths$delabel[post.paths$diffexpressed != "NO"] <- rownames(post.paths)[post.paths$diffexpressed != "NO"]
+
+post.paths.v <- ggplot(data=post.paths, aes(x=effect, y=-log10(wi.ep), col=diffexpressed)) +
+  geom_point(aes(alpha = ifelse(diffexpressed == "NO", 0.5, 1))) +
+  theme_bw() +
+  scale_color_manual(values=c("#5a78b5", "black", "salmon")) +
+  theme(legend.position="none") +
+  labs(x="Effect Size", y="Wilcoxon P (-log10)")
+```
+
+Make the figure panel
+```{r}
+grid.arrange(pre.sv.v, post.sv.v, pre.ec.v, post.ec.v, pre.paths.v, post.paths.v, nrow=3)
+```
+
+Compare the features (ASVs, ECs, pathways) across timepoints.
+
+```{r}
+# Convert row names to a column called Row.names for .ec and .p files
+pre.ec$Row.names <- rownames(pre.ec)
+post.ec$Row.names <- rownames(post.ec)
+
+pre.paths$Row.names <- rownames(pre.paths)
+post.paths$Row.names <- rownames(post.paths)
+
+# Function to create comparison table
+generate_comparison_table <- function(pre, post) {
+  # Extract negative effect features
+  pre.neg <- pre$Row.names[pre$effect < -0.5]
+  post.neg <- post$Row.names[post$effect < -0.5]
+  
+  # Find common and unique features (negative effect)
+  common.neg <- intersect(pre.neg, post.neg)
+  unique.pre.neg <- setdiff(pre.neg, post.neg)
+  unique.post.neg <- setdiff(post.neg, pre.neg)
+  
+  # Extract positive effect features
+  pre.pos <- pre$Row.names[pre$effect > 0.5]
+  post.pos <- post$Row.names[post$effect > 0.5]
+  
+  # Find common and unique features (positive effect)
+  common.pos <- intersect(pre.pos, post.pos)
+  unique.pre.pos <- setdiff(pre.pos, post.pos)
+  unique.post.pos <- setdiff(post.pos, pre.pos)
+  
+  # Determine the maximum number of rows needed
+  max_length <- max(length(common.neg), length(unique.pre.neg), length(unique.post.neg), 
+                    length(common.pos), length(unique.pre.pos), length(unique.post.pos))
+  
+  # Pad each vector with NA to match max_length
+  data.frame(
+    Common_Negative = c(common.neg, rep(NA, max_length - length(common.neg))),
+    Unique_Pre_Neg = c(unique.pre.neg, rep(NA, max_length - length(unique.pre.neg))),
+    Unique_Post_Neg = c(unique.post.neg, rep(NA, max_length - length(unique.post.neg))),
+    Common_Positive = c(common.pos, rep(NA, max_length - length(common.pos))),
+    Unique_Pre_Pos = c(unique.pre.pos, rep(NA, max_length - length(unique.pre.pos))),
+    Unique_Post_Pos = c(unique.post.pos, rep(NA, max_length - length(unique.post.pos)))
+  )
+}
+
+# Generate comparison tables
+comparison_table_sv <- generate_comparison_table(pre.sv, post.sv)
+comparison_table_ec <- generate_comparison_table(pre.ec, post.ec)
+comparison_table_paths <- generate_comparison_table(pre.paths, post.paths)
+
+# Save results
+#write.table(comparison_table_sv, "RvsNRcomparisons_sv.txt", sep="\t", row.names=FALSE, quote=FALSE)
+#write.table(comparison_table_ec, "RvsNRcomparisons_ec.txt", sep="\t", row.names=FALSE, quote=FALSE)
+#write.table(comparison_table_paths, "RvsNRcomparisons_paths.txt", sep="\t", row.names=FALSE, quote=FALSE)
+```
+
+# Additional Exploratory Analyses
+
+## Delta CLR - correlation with baseline metadata features
+
+Calculate the deltaCLR (CLR post - CLR pre)
+```{r}
+d.clr <- as.data.frame(d.clr)
+d.clr$id <- rownames(d.clr)
+
+# Split into pre and post tables
+d.pre <- d.clr[grepl("_pre$", d.clr$id), ]
+d.post <- d.clr[grepl("_post$", d.clr$id), ]
+
+# Extract individual IDs
+d.pre$participant <- sub("_pre$", "", d.pre$id)
+d.post$participant <- sub("_post$", "", d.post$id)
+
+# Make sure features are only the columns with CLR values
+clr.cols <- setdiff(colnames(d.clr), "id")
+
+# Merge pre and post by subject
+d.delta <- merge(d.post[, c("participant", clr.cols)],
+                 d.pre[, c("participant", clr.cols)],
+                 by = "participant",
+                 suffixes = c("_post", "_pre"))
+
+# Calculate delta CLR (post - pre)
+delta.cols <- paste0(clr.cols, "_delta")
+d.delta[delta.cols] <- d.delta[paste0(clr.cols, "_post")] - d.delta[paste0(clr.cols, "_pre")]
+
+# Keep only subject and delta CLR columns
+d.delta.clr <- d.delta[, c("participant", delta.cols)]
+
+# Remove leading zeros
+d.delta.clr$participant <- sub("^0+", "", d.delta.clr$participant)
+
+# merge with metadata
+delta_meta <- merge(meta, d.delta.clr, by = "participant", all = FALSE)
+
+deltas <- c(39:542)
+delta_cols <- names(delta_meta)[deltas]
+
+delta_meta <- delta_meta[delta_meta$timepoint!= "2_post",]
+
+#perform wilcoxon test of delta CLR values between R vs NR
+#Ensure grouping variable is a factor
+delta_meta$metabolic_responder <- as.factor(delta_meta$metabolic_responder)
+
+wilcox_results <- lapply(delta_cols, function(col) {
+  
+  # Skip non-numeric or zero-variance features
+  if (!is.numeric(delta_meta[[col]]) ||
+      length(unique(na.omit(delta_meta[[col]]))) < 2) {
+    return(NULL)
+  }
+  
+  # Wilcoxon test
+  wt <- wilcox.test(
+    delta_meta[[col]] ~ delta_meta$metabolic_responder,
+    exact = FALSE,
+    na.action = na.omit
+  )
+  
+  # Group means
+  mean_NR <- mean(delta_meta[[col]][delta_meta$metabolic_responder == "NR"], na.rm = TRUE)
+  mean_R  <- mean(delta_meta[[col]][delta_meta$metabolic_responder == "R"],  na.rm = TRUE)
+  
+  data.frame(
+    feature = col,
+    mean_NR = mean_NR,
+    mean_R  = mean_R,
+    W = wt$statistic,
+    p_value = wt$p.value
+  )
+})
+wilcox_results <- do.call(rbind, wilcox_results)
+
+# Multiple testing correction
+wilcox_results$padj <- p.adjust(wilcox_results$p_value, method = "fdr")
+
+# Order by significance
+wilcox_results <- wilcox_results[order(wilcox_results$p_value), ]
+
+meta2 <- meta
+meta2$time_responder <- paste(
+  meta2$timepoint,
+  meta2$metabolic_responder,
+  sep = "_"
+)
+
+#run maaslin2 based on metabolic responder status
+# #fit_data <- Maaslin2(d.czm, meta2, 'maaslin/SV_metresponders_timepoint_interaction2', 
+#                      transform = "none", 
+#                      normalization = "CLR", 
+#                      analysis_method = "LM", 
+#                      fixed_effects = c("metabolic_responder","timepoint","time_responder"),
+#                      reference = c("time_responder,1_pre_NR"),
+#                      random_effects = c("participant"),
+#                      standardize = FALSE)
+
+# # samples significant for participant, BP_systolic, tot_cholesterol, LDL
+# meta$participant<-as.factor(meta$participant)
+# 
+# #run some correlations with the delta clr
+# #QIDS
+# # QIDS_percent_res <- data.frame()
+# # for (col in delta_cols) {
+# #   res <- cor.test(delta_meta$QIDS_percent_change, delta_meta[[col]], method = "spearman")
+# #   res.df <- tidy(res)
+# #   res.df$SV <- col
+# #   QIDS_percent_res <- rbind(QIDS_percent_res, res.df)
+# # }
+# # QIDS_percent_res$BH <- p.adjust(QIDS_percent_res$p.value, method = "BH")
+# # SV 23 aka strep salivarius negatively associated with qids percent change aka higher strep with improving depression symptomology!!
+# 
+# # test QIDS correlation to metabolic changes
+# post1 <- c(27:36)
+# post2 <- names(delta_meta_post)[post1]
+# 
+# # QIDS_metabolic <- data.frame()
+# # for (metric in post2){
+# #   res <- cor.test(delta_meta$QIDS_percent_change, delta_meta[[metric]], method = "spearman")
+# #   res.df <- tidy(res)
+# #   res.df$metric <- metric
+# #   QIDS_metabolic <- rbind(QIDS_metabolic, res.df)
+# #  }
+# # QIDS_metabolic$BH <- p.adjust(QIDS_metabolic$p.value, method = "BH") #no significant correlations between QIDS and any of the 'post' metabolic changes
+# 
+# # OASIS_percent_res <- data.frame()
+# # for (col in delta_cols) {
+# #   res <- cor.test(delta_meta$OASIS_percent_change, delta_meta[[col]], method = "spearman")
+# #   res.df <- tidy(res)
+# #   res.df$SV <- col
+# #   OASIS_percent_res <- rbind(OASIS_percent_res, res.df)
+# # }
+# # OASIS_percent_res$BH <- p.adjust(OASIS_percent_res$p.value, method = "BH")
+# # #nothing significant
+# 
+# # OASIS_metabolic <- data.frame()
+# # for (metric in post2){
+# #   res <- cor.test(delta_meta$OASIS_percent_change, delta_meta[[metric]], method = "spearman")
+# #   res.df <- tidy(res)
+# #   res.df$metric <- metric
+# #   OASIS_metabolic <- rbind(OASIS_metabolic, res.df)
+# #  }
+# # OASIS_metabolic$BH <- p.adjust(OASIS_metabolic$p.value, method = "BH") #no significant correlations between OASIS and any of the 'post' metabolic changes
+# 
+# delta_meta_pre <- subset(delta_meta, timepoint == "1_pre")
+# delta_meta_post <- subset(delta_meta, timepoint == "2_post")
+# 
+# #baseline correlations
+# bl1 <- c(9, 18:26)
+# bl2 <- names(delta_meta_pre)[bl1]
+# 
+# BL_cor <- data.frame()
+# for (metric in bl2) {
+#   for (col in delta_cols) {
+#     res <- cor.test(delta_meta_pre[[metric]], delta_meta_pre[[col]], method = "spearman")
+#     res.df <- tidy(res)
+#     res.df$BaselineMetric <- metric
+#     res.df$SV <- col
+#     BL_cor <- rbind(BL_cor, res.df)
+#   }
+# }
+# 
+# BL_cor <- BL_cor %>%
+#   arrange(BaselineMetric, SV) %>%  # <-- stable order
+#   group_by(BaselineMetric) %>%
+#   mutate(BH = p.adjust(p.value, method = "BH")) %>%
+#   ungroup()
+# #nothing significant. So baseline vales dont correlate with change in CLR of any SV
+# 
+# #post correlations
+# post1 <- c(27:36)
+# post2 <- names(delta_meta_post)[post1]
+# 
+# post_cor <- data.frame()
+# for (metric in post2) {
+#   for (col in delta_cols) {
+#     res <- cor.test(delta_meta_post[[metric]], delta_meta_post[[col]], method = "spearman")
+#     res.df <- tidy(res)
+#     res.df$PostMetric <- metric
+#     res.df$SV <- col
+#     post_cor <- rbind(post_cor, res.df)
+#   }
+# }
+# 
+# post_cor <- post_cor %>%
+#   arrange(PostMetric, SV) %>%  # <-- stable order
+#   group_by(PostMetric) %>%
+#   mutate(BH = p.adjust(p.value, method = "BH")) %>%
+#   ungroup()
+# #nothing significant
+
+# correlate QIDS and OASIS with metabolic changes
+```
+
+::: {.tocify-extend-page data-unique="tocify-extend-page" style="height: 598px;"}
+:::
