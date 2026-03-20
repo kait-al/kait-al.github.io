@@ -1,0 +1,1009 @@
+---
+title: 'Prebiotic + FMT MiPro Study: Microbiota Analysis'
+author: "Kait Al"
+date: "2026-03-18"
+output: 
+  bookdown::html_document2:
+    toc: true
+    toc_float: true
+    collapse: section
+    toc_depth: 3
+    number_sections: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Introduction
+
+This document summarizes the microbiota analyses for the Prebiotic + FMT MiPro study. 
+
+Citation: Kait F Al, Suyang Jia, Michael Silverman, Gregor Reid, Jeremy P Burton, Seema Parvathy, Prebiotic Modulation of FMT Donor Microbiota Enhances MASLD-Relevant Taxa and Functions in an In Vitro Gut Model, Journal of Applied Microbiology, 2026; [DOI:10.1093/jambio/lxag074](https://doi.org/10.1093/jambio/lxag074).
+
+### Abstract:
+Metabolic dysfunction-associated steatotic liver disease (MASLD, formerly non-alcoholic fatty liver disease) is a prevalent and progressive condition closely linked to gut microbiota composition. Fecal microbiota transplantation (FMT) may help restore a health-associated microbiome, but its efficacy is often limited by inconsistent engraftment of beneficial taxa. Prebiotics may selectively support keystone microbes associated with reduced MASLD risk. This study evaluated two prebiotics, inulin and xylooligosaccharides (XOS), for their ability to modulate the microbiota of healthy FMT donors in an in vitro gut model, focusing on enriching beneficial taxa and functions associated with MASLD resilience. Stool from eight clinically qualified FMT donors was cultured anaerobically for 24 hours with or without prebiotics. Microbiota composition was assessed by 16S rRNA gene sequencing and short-chain fatty acid (SCFA) concentrations were measured using nuclear magnetic resonance. Functional potential was inferred using predictive metagenomic analysis. Prebiotic responses were highly donor-specific, yet both inulin and XOS consistently enriched Bifidobacterium and Bacteroides – genera associated with SCFA production and metabolic health. XOS preferentially enriched Lactobacillus and Parabacteroides, while inulin enhanced Holdemanella and Mediterraneibacter. Functional pathways relevant to MASLD pathophysiology were enriched, including carbohydrate metabolism, vitamin biosynthesis, fatty acid metabolism, and tryptophan degradation. Both prebiotics significantly increased acetate levels, while butyrate showed a donor-dependent increasing trend. These findings suggest that prebiotic supplementation can selectively enrich MASLD-relevant microbial taxa and functions in donor-derived FMT material, supporting their potential as adjuvants to enhance the efficacy and disease-specificity of FMT interventions for MASLD.
+
+# 2. Initial Code
+
+## Load required packages
+
+```{r message = FALSE, warning = FALSE}
+library(ALDEx2)
+library(ARTool)
+library(broom)
+library(cowplot)
+library(dplyr)
+library(DT)
+library(emmeans)
+library(forcats)
+library(ggplot2)
+library(ggrepel)
+library(gridExtra)
+library(kableExtra)
+library(knitr)
+library(lme4)
+library(lmerTest)
+library(Maaslin2)
+library(microbiome)
+library(patchwork)
+library(phyloseq)
+library(plyr)
+library(RColorBrewer)
+library(reshape2)
+library(rlist)
+library(sjmisc)
+library(stringr)
+library(tidyr)
+library(zCompositions)
+```
+
+## Import the files
+
+```{r}
+counts <- read.table("data/github_counts.txt", 
+                     header = TRUE, row.names = 1, sep = "\t", check.names = FALSE, 
+                     quote = "", stringsAsFactors = FALSE)
+tax <- read.table("data/cutadapt_tax_138.2.txt", 
+                  header = TRUE, row.names = 1, sep = "\t", check.names = FALSE, 
+                  quote = "", stringsAsFactors = FALSE)
+meta<-read.table("data/github_metadata.txt", header=T, row.names = 1, sep='\t', comment.char = "")
+```
+
+## Calculate alpha diversity on unfiltered counts table
+
+```{r}
+# make a phyloseq object
+tax<-as.matrix(tax) 
+OTU = otu_table(counts, taxa_are_rows = FALSE)
+TAX = tax_table(tax)
+physeq = phyloseq(OTU, TAX)
+```
+
+From phyloseq R package, calculate various alpha diversity measures
+
+```{r, warning=FALSE}
+div<- estimate_richness(physeq, split = TRUE, measures = NULL)
+```
+
+From microbiome R package, calculate various dominance indices
+
+```{r}
+dom<- dominance(physeq)
+```
+
+Merge the data
+
+```{r}
+div_all <- data.frame(div, dom)
+
+alpha<-merge(div_all, meta, by=0, all=FALSE)
+#write.table(alpha, file="data/alpha_diversity.txt", sep='\t', quote=F)
+```
+
+## Filter the counts tables for downstream analyses
+
+```{r}
+# what are the dimensions of the original counts file?
+dim(counts)
+
+# Combine the counts and tax tables into one tidier working file
+t.counts<-t(counts)
+ct<-merge(t.counts, tax, by="row.names")
+
+rownames(ct)<-ct$Row.names
+ct$Row.names <- NULL
+ct$Sequence <- NULL
+
+ct<-unite(ct,"tax.vector", Kingdom:Genus, sep=':', remove=TRUE)
+ct$Species <- NULL
+```
+
+Check to see how many samples contain > 1000 total reads.
+
+```{r}
+ct2<-ct[,1:ncol(ct)-1]
+i <- (colSums(ct2) <=1000)
+d.s <- ct2[, !i]
+dim(d.s)
+ncol(ct2)-ncol(d.s)
+```
+
+The DNA blank negative control sample was removed. Now filter out SVs that are not at least 0.1 % abundance in any sample or have fewer than 100 total reads across all samples.
+
+```{r}
+d.freq <- apply(d.s, 2, function(x) {x/sum(x)})
+
+#keep SVs > 0.1% in any sample
+d.0 <- d.s[apply(d.freq, 1, max)>0.001,]
+
+# make relative abundance table
+d.freq0 <- data.frame(apply(d.0, 2, function(x){x/sum(x)}))
+
+#filter SVs based on a read count cutoff
+count = 100
+d.2 <- data.frame(d.s[which(apply(d.s, 1, function(x){sum(x)}) > count),])
+
+row_list<-intersect(rownames(d.0), rownames(d.2))
+
+d_filt<-d.s[rownames(d.s) %in% row_list,]
+
+#add taxonomy back in and save the filtered counts file
+d_filt$tax.vector = ct$tax.vector[match(rownames(d_filt), rownames(ct))]
+#write the file
+#write.table(d_filt, file="data/dada2_tax_counts_001filt_138.2_gen.txt", sep='\t', quote=F)
+```
+
+This file 'd_filt' will be the one we primarily use downstream.
+
+# 3. Figures
+
+## Figure 1. Microbiota composition of donor stool samples following 24 h growth in vitro.
+
+### 1A. Relative abundance barplot
+
+```{r}
+gen<-ddply(d_filt, "tax.vector", numcolwise(sum))
+taxa<-gen$tax.vector
+row.names(gen)<-gen$tax.vector
+
+split6 <- sapply(strsplit(as.character(taxa), ":"), "[", 6)
+split6 <- as.data.frame(split6)
+rownames(split6)<-rownames(gen)
+gen$tax.vector<-NULL
+
+# relative abundance
+gen.f <- apply(gen, 2, function(x) {x/sum(x)})
+
+# order by abundance
+y1 <- gen.f[order(rowSums(gen.f), decreasing = TRUE),]
+y1 <-y1[,-which(colnames(y1)=="PCR_blank")] #remove PCR_blank sample
+
+#check sample columns sums to 1 (100%)
+colSums(y1)
+
+bugnames<-rownames(y1)
+```
+
+Group together all the rare taxa that are not greater than a specific abundance cutoff. You can try multiple cutoffs, and use one that ensures the barplot is informative but not too busy. Here we decided on 0.5%.
+
+```{r}
+abund <- 0.005
+keep.taxa.index = rownames(y1[rowMeans(y1) > abund,])
+
+y3 <- as.data.frame(y1) %>% 
+  filter(rownames(.) %in% keep.taxa.index) %>% 
+  sjmisc::rotate_df() %>% 
+  mutate(remainder= 1- rowSums(.)) %>%
+  sjmisc::rotate_df() %>% 
+  as.matrix(.)
+
+# barplot in ggplot to get stratified by donor sample
+melted<-melt(as.matrix(y3))
+melted$Donor <-sub("_.*","",melted$Var2)
+melted$Treatment<-sub(".*_","", melted$Var2)
+colnames(melted)<-c("Genus", "Sample", "Abundance", "Donor", "Treatment")
+
+# rename the taxa without the whole long string
+# separate the taxa string into the different elements
+test<-data.frame(str_split_fixed(melted$Genus, ":", 6)) 
+test$Genus <- paste(test$X6)
+melted$Genus<-test$Genus
+melted$Genus <- gsub("\\[|\\]", "", melted$Genus) #remove brackets
+melted$Genus[melted$Genus == ""] <- "<0.5% Abundance"
+
+melted$Treatment <- gsub("control","C", melted$Treatment)
+melted$Treatment <- gsub("inulin","IN", melted$Treatment)
+melted$Treatment <- gsub("xos","XO", melted$Treatment)
+
+y4<-melted #for simplicity
+pal1=rep(c("white","#006F6B","#00ADAB","#ACDEE0","#3E783A","#76BB47","#AAD486","#CBC02D","#FCF281","#C36928","#F58123","#F8A96E","#F9DDCA","#851719","#ED2027","#F3786D","#4A2970","#7E6BAD","#B8ACD1","#A71D47","#ED1F6B","#F498B9","#1A3E6F","grey","#2276BD","#53A6DC","#A3D9F6","#8e03ad","#e594f7","#f4d7fa","#B2B3B2","#4d6e50"))
+
+
+pal2=rlist::list.reverse(pal1)
+
+barplot <- ggplot(data=y4, aes(x=Treatment, y=Abundance, fill=Genus)) +
+  geom_bar(aes(), stat="identity", position="stack", color="black", linewidth=0.1) +
+  scale_fill_manual(values=pal1) +
+  facet_grid(~Donor, scales ="free_x") +
+  guides(fill = guide_legend(ncol = 2)) +
+  ylab("Relative Abundance") +
+  theme_bw() +
+  theme(axis.text.x=element_text(size=8), legend.position="right", legend.text = element_text(face = "italic", size = 8),
+        legend.key.size = unit(0.5, "cm"))
+barplot
+```
+
+### 1B. PCA plot
+
+Apply compositional data transformation (CZM method) and CLR transformation.
+
+```{r message = FALSE, warning = FALSE}
+d.czm <- cmultRepl(t(y1),  label=0, method="CZM")
+```
+
+```{r}
+d.clr <- t(apply(d.czm, 1, function(x){log(x) - mean(log(x))}))
+```
+
+Perform PCA
+
+```{r, warning = FALSE}
+d.pcx <- prcomp(d.clr)
+
+# Define parameters for PCA
+sv_positions <- data.frame(d.pcx[["rotation"]])
+# Merge on genus table
+sv_pos <- merge(sv_positions, split6, by = 0)
+# Calculate Euclidean distance
+arrow_len <- function(x, y) {
+  sqrt((x - 0)^2 + (y - 0)^2)
+}
+sv_pos_dist <- mapply(arrow_len, sv_pos$PC1, sv_pos$PC2)
+sv_pos_dist <- as.data.frame(cbind(sv_pos_dist, sv_pos$Row.names, sv_pos$split6, sv_pos$PC1, sv_pos$PC2))
+colnames(sv_pos_dist) <- c("Distance", "SV", "Genus", "PC1", "PC2")
+# Filter arrow based on distance
+filter <- sv_pos_dist %>% filter(Distance >= 0.15)
+
+d.mvar <- sum(d.pcx$sdev^2)
+# Calculate the PC1 and PC2 variance
+PC1 <- paste("PC1: ", round(sum(d.pcx$sdev[1]^2)/d.mvar, 3))
+PC2 <- paste("PC2: ", round(sum(d.pcx$sdev[2]^2)/d.mvar, 3))
+
+metadata<-tibble::rownames_to_column(meta, "SampleID")
+loadings<- data.frame(Variables=rownames(d.pcx$rotation), d.pcx$rotation)
+values<-merge(d.pcx$x[,c(1,2)], metadata[,c("SampleID","Donor","Treatment")],
+              by.x="row.names", by.y="SampleID", all=F)
+
+values$Treatment <- gsub("control","C", values$Treatment)
+values$Treatment <- gsub("inulin","IN", values$Treatment)
+values$Treatment <- gsub("xos","XO", values$Treatment)
+
+values$Donor<-factor(values$Donor, levels=c("D1","D2","D3","D4","D5","D6","D7","D8"))
+values$Treatment<-factor(values$Treatment, levels=c("C","IN","XO"))
+cols <- c("D1" = "mistyrose3","D2" = "paleturquoise4","D3" = "goldenrod1","D4" = "deeppink3","D5" = "#B6E7EA","D6" = "mediumpurple3","D7" = "lightpink","D8" = "forestgreen")
+
+theme_new <- theme_set(theme_bw()) 
+pca_p <- ggplot(values, aes(x = PC1, y = PC2)) +
+  geom_segment(data = sv_pos, aes(x = 0, y = 0, xend = 25 * PC1, yend = 25 * PC2),
+               arrow = arrow(length = unit(1/2, 'picas')),
+               color = "grey69", alpha = 0.8, size = 0.15) + # Plot features
+  geom_text_repel(data = filter, aes(x = 25 * as.numeric(PC1), y = 25 * as.numeric(PC2)), nudge_x = 0.25, nudge_y = 0.25,
+                  segment.color = 'transparent',
+                  force_pull = 50,
+                  force = 7,
+                  label = filter$Genus, color = "grey69", size = 3, fontface = "italic") +
+  geom_point(data = values, aes(fill=Donor, colour=Donor), shape=21, stroke=1, size=6) +
+  geom_text(data = values, aes(label=Treatment), size=2.5) +
+  scale_fill_manual(values = cols %>% sapply(function(x) adjustcolor(x, alpha.f = 0.5))) +  # 25% fill opacity
+  scale_colour_manual(values = cols) +
+  xlab(paste0("PC1: ", round(100*(d.pcx$sdev[1]^2/sum(d.pcx$sdev^2)),1),"%")) +
+  ylab(paste0("PC2: ", round(100*(d.pcx$sdev[2]^2/sum(d.pcx$sdev^2)),1),"%")) +
+  theme(legend.position = c(0.05, 0.7))
+pca_p
+```
+
+### 1C. Aitchison distance comparison
+
+Compute Aitchison distances from the CLR transformed abundances.
+
+```{r}
+aitch_dists <- as.matrix(dist(d.clr))
+```
+
+Make table of distances between C vs other samples with use of loop through Aitchison distance matrix.
+
+```{r}
+# Initialize empty lists to hold distances for each category
+pIN <- list() # List for IN distances
+pXO <- list() # List for XO distances
+
+# Loop through the distance matrix for IN distances
+for (i in 1:nrow(aitch_dists)) {
+  for (j in 1:ncol(aitch_dists)) {
+    currentrow <- rownames(aitch_dists)[i]
+    currentcol <- colnames(aitch_dists)[j]
+    
+    currentrow_split <- unlist(strsplit(currentrow, "_"))
+    currentcol_split <- unlist(strsplit(currentcol, "_"))
+    
+    if (length(currentrow_split) >= 2 & length(currentcol_split) >= 2) {
+      if (currentrow_split[1] == currentcol_split[1] & 
+          currentrow_split[2] == "inulin" & 
+          currentcol_split[2] == "control") {
+        # Aaitch_dists distance to the list for IN distances
+        pIN[[currentrow_split[1]]] <- c(pIN[[currentrow_split[1]]], aitch_dists[i, j])
+      }
+    }
+  }
+}
+
+# Loop through the distance matrix for XO distances
+for (i in 1:nrow(aitch_dists)) {
+  for (j in 1:ncol(aitch_dists)) {
+    currentrow <- rownames(aitch_dists)[i]
+    currentcol <- colnames(aitch_dists)[j]
+    
+    currentrow_split <- unlist(strsplit(currentrow, "_"))
+    currentcol_split <- unlist(strsplit(currentcol, "_"))
+    
+    if (length(currentrow_split) >= 2 & length(currentcol_split) >= 2) {
+      if (currentrow_split[1] == currentcol_split[1] & 
+          currentrow_split[2] == "xos" & 
+          currentcol_split[2] == "control") {
+        # Aaitch_dists distance to the list for XO distances
+        pXO[[currentrow_split[1]]] <- c(pXO[[currentrow_split[1]]], aitch_dists[i, j])
+      }
+    }
+  }
+}
+
+# Now combine the results into a table
+# Ensure the participants (prefixes) are unique
+all_participants <- unique(c(names(pIN), names(pXO)))
+
+# Create a matrix with the participants as rows and "IN", "XO" as columns
+pdist_table <- data.frame(matrix(NA, nrow = length(all_participants), ncol = 2))
+rownames(pdist_table) <- all_participants
+colnames(pdist_table) <- c("IN", "XO")
+
+# Fill the table with the distances for each category
+for (participant in all_participants) {
+  if (!is.null(pIN[[participant]])) {
+    pdist_table[participant, "IN"] <- mean(pIN[[participant]], na.rm = TRUE)
+  }
+  if (!is.null(pXO[[participant]])) {
+    pdist_table[participant, "XO"] <- mean(pXO[[participant]], na.rm = TRUE)
+  }
+}
+
+datatable(pdist_table, options=list(paging=FALSE), colnames = c("Donor", "C-IN", "C-XOS"))
+```
+
+Now make the plot.
+
+```{r}
+# Reset row names to be a column (Donor)
+pdist_table$Donor <- rownames(pdist_table)
+
+# Ensure the first 2 columns (BL, IN, XO) are numeric
+pdist_table[, 1:2] <- lapply(pdist_table[, 1:2], as.numeric)
+
+# Reshape the data into long format using melt
+long_pd <- melt(pdist_table, id.vars = "Donor", 
+                measure.vars = c("IN", "XO"), 
+                variable.name = "Treatment", 
+                value.name = "Distance")
+
+aitch_p <- ggplot(long_pd, aes(x=Treatment, y=Distance)) +
+  geom_point(aes(fill=Donor, colour=Donor), shape=21, size=5, stroke=1) +
+  scale_fill_manual(values = cols %>% sapply(function(x) adjustcolor(x, alpha.f = 0.25))) +  # 25% fill opacity
+  scale_colour_manual(values = cols) +  # Opaque stroke matching the fill color
+  ylab("Aitchison Distance") +
+  scale_x_discrete(labels=c("C-IN","C-XOS")) +
+  stat_summary(aes(x = Treatment, y = Distance), fun = median, geom = "point", shape = 95, size = 10, inherit.aes = FALSE) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(), legend.position="none")
+aitch_p
+
+```
+
+### 1D. Shannon's index plot
+
+First lets do some stats to compare alpha diversity metrics pairwise between C, IN, and XOS samples from the same donors.
+
+```{r, warning = FALSE}
+# Subset first 17 columns + Donor and Treatment
+metric <- colnames(alpha)[c(2,3,5,7:17)]
+
+# Ensure factors
+alpha$Treatment <- factor(alpha$Treatment, levels = c("control", "inulin", "xos"))
+alpha$Donor <- factor(alpha$Donor)
+
+# Subset first alpha diversity columns + Donor and Treatment
+alpha_sub <- alpha %>%
+  dplyr::select(Row.names, metric, Donor, Treatment)
+
+# Reshape to long format
+alpha_long <- alpha_sub %>%
+  pivot_longer(
+    cols = all_of(metric),
+    names_to = "Metric",
+    values_to = "Value"
+  )
+
+# Function: ANOVA with post hoc, returning data frame
+run_anova_df <- function(df) {
+  all_results <- list()
+  
+  for (metric in unique(df$Metric)) {
+    sub_df <- df %>% filter(Metric == metric)
+    # Linear model with donor as blocking factor
+    model <- lm(Value ~ Treatment + Donor, data = sub_df)
+    # ANOVA p-value for Treatment
+    anova_tab <- anova(model)
+    anova_p <- anova_tab["Treatment", "Pr(>F)"]
+    
+    # Post hoc with Tukey adjustment
+    posthoc <- emmeans(model, pairwise ~ Treatment, adjust = "tukey")
+    posthoc_df <- as.data.frame(posthoc$contrasts)
+    posthoc_df <- posthoc_df %>%
+      dplyr::mutate(Metric = metric, ANOVA_p = anova_p) %>%
+      dplyr::rename(Comparison = contrast, PostHoc_p = p.value) %>%
+      dplyr::select(Metric, ANOVA_p, Comparison, estimate, SE, df, t.ratio, PostHoc_p)
+    
+    all_results[[metric]] <- posthoc_df
+  }
+  bind_rows(all_results)
+}
+
+# Run and collect into one data frame
+anova_results_df <- run_anova_df(alpha_long)
+anova_results_df <- anova_results_df %>%
+  mutate(ANOVA_p = signif(ANOVA_p, 3),PostHoc_p = signif(PostHoc_p, 3)) #round to 3 significant digits
+
+datatable(anova_results_df, 
+          options = list(scroll= TRUE, scrollY='300px', paging=FALSE),
+          caption = htmltools::tags$caption(style = 'caption-side: top; text-align: left;', htmltools::em('Alpha Diversity ANOVA and Tukey Post Hoc Results')))
+
+```
+
+So both prebiotics seem to reduce alpha diversity, only XOS is statistically significant for Shannon's index.
+
+Now lets make the figure.
+
+```{r}
+p_shannon<- ggplot(alpha %>% filter(!is.na(Treatment)), aes(x=Treatment, y=Shannon)) +
+  geom_point(aes(fill=Donor, colour=Donor), shape=21, size=5, stroke=1) +
+  scale_fill_manual(values = cols %>% sapply(function(x) adjustcolor(x, alpha.f = 0.25))) +  # 25% fill opacity
+  scale_colour_manual(values = cols) +  # Opaque stroke matching the fill color
+  ylab("Shannon's Index") +
+  scale_x_discrete(labels=c("C","IN","XO")) +
+  stat_summary(aes(x = Treatment, y = Shannon), fun = median, geom = "point", shape = 95, size = 10, inherit.aes = FALSE) +
+  annotate("text", x = 3, y = 3.75, label ="*", size=5) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(), legend.position = "none")
+p_shannon
+```
+
+### Build the figure panel
+
+```{r fig.cap="Figure 1. Microbiota composition of donor stool samples following 24 h growth in vitro "}
+lay<-rbind(c(1,1,1),c(1,1,1),c(2,2,3),c(2,2,4))
+grid.arrange(barplot, pca_p, aitch_p, p_shannon, layout_matrix=lay)
+```
+
+## Figure 2. Prebiotic treatment significantly altered the microbiota composition.
+
+First we must perform differential taxonomic abundance analysis using ALDEx2. These values will then be used to make the effect size strip plots in Figure 2 A and B.
+
+These results will not be identical each time you repeat these analyses. This is because ALDEx2 uses Monte Carlo sampling to estimate distributions from compositional data, and each run draws slightly different random samples from those estimated distributions, so the resulting effect sizes and test statistics vary slightly.
+
+```{r, warning=FALSE, message=FALSE}
+
+cont<-grep("_control", colnames(d_filt))
+inulin<-grep("_inulin", colnames(d_filt))
+xo<-grep("_xos", colnames(d_filt))
+
+aldex.in<-d_filt[,c(inulin,cont)]
+
+#Make a vector of conditions. This must be in the same order and the same number as the columns (samples) of the input table (aldex.in)
+conds.in<-c(rep("inulin", length(inulin)), rep("cont", length(cont)))
+
+# get the clr values: this is the main ALDEx function for all downstream analyses
+#mc.samples=128 is often sufficient
+x.in <- aldex.clr(aldex.in, conds.in, mc.samples=128, verbose=TRUE)
+
+#perform t-test (both Welches and Wilcoxon, plus a Benjamini-Hochberg multiple test correction)
+x.tt.in <- aldex.ttest(x.in, paired.test=TRUE)
+
+#estimate effect size and the within and between condition values
+#include indiv. samples or not
+x.effect.in <- aldex.effect(x.in, paired.test=TRUE)
+
+#merge the data
+x.all.in <- data.frame(x.tt.in, x.effect.in)
+
+x.effect.in$tax.vector = d_filt$tax.vector[match(rownames(x.effect.in), rownames(d_filt))]
+x.effect.in <- tibble::rownames_to_column(x.effect.in, var="SV")
+
+datatable(
+  x.effect.in,
+  options = list(
+    scrollY='300px',
+    scrollX= TRUE,
+    paging= FALSE
+  ),
+  caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::em('ALDEx2 Effect Size Test: Control vs. Inulin at SV level')
+  )
+)
+```
+
+Now repeat, testing the comparison between control and xos treated samples.
+
+```{r, message=FALSE, warning=FALSE}
+aldex.xo<-d_filt[,c(xo,cont)]
+conds.xo<-c(rep("xo", length(xo)), rep("cont", length(cont)))
+x.xo <- aldex.clr(aldex.xo, conds.xo, mc.samples=128, verbose=TRUE)
+x.tt.xo <- aldex.ttest(x.xo, paired.test=TRUE)
+x.effect.xo <- aldex.effect(x.xo, paired.test=TRUE)
+x.all.xo <- data.frame(x.tt.xo, x.effect.xo)
+
+x.effect.xo$tax.vector = d_filt$tax.vector[match(rownames(x.effect.xo), rownames(d_filt))]
+x.effect.xo <- tibble::rownames_to_column(x.effect.xo, var="SV")
+
+datatable(
+  x.effect.xo,
+  options = list(
+    scrollY='200px',
+    scrollX= TRUE,
+    paging= FALSE
+  ),
+  caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::em('ALDEx2 Effect Size Test: Control vs. XOS at SV level')
+  )
+)
+```
+
+### 2A. Control vs Inulin (SV level) strip plot
+
+```{r}
+x.effect.in <- x.effect.in %>%
+  separate(col="tax.vector",
+           into=c("Kingdom","Phylum","Class","Order","Family","Genus"),
+           sep= ":",
+           remove= TRUE)
+
+sv_in<-subset(x.effect.in, !grepl("Methanobacteriota", Phylum))
+
+theme_new<-theme_set(theme_bw())
+pos <- position_jitter(height = 0.2)
+
+SV_inulin<-ggplot(sv_in, aes(x=effect, y=Phylum, label=Genus)) + 
+  geom_point(aes(colour = cut(effect, c(-Inf, -0.5, 0.5, Inf)), alpha=cut(effect, c(-Inf, -0.5, 0.5, Inf))), 
+             size = 3, position = pos) +
+  scale_color_manual(name = "enriched",
+                     values = c("(-Inf,-0.5]" = "black",
+                                "(-0.5,0.5]" = "black",
+                                "(0.5, Inf]" = "steelblue1")) +
+  scale_alpha_manual(name = "enriched",
+                     values = c("(-Inf,-0.5]" = 0.8,
+                                "(-0.5,0.5]" = 0.1,
+                                "(0.5, Inf]" = 0.8)) +
+  xlab("Effect Size") +
+  scale_y_discrete(limits=rev) +
+  geom_text_repel(aes(label = ifelse(effect > 0.75, Genus, "")), position = position_jitter(height=0.2), size=2.5, max.overlaps = Inf, alpha=0.5) +
+  theme(legend.position="none")
+SV_inulin
+```
+
+### 2B. Control vs XOS (SV level) strip plot
+
+```{r}
+x.effect.xo <- x.effect.xo %>%
+  separate(col="tax.vector",
+           into=c("Kingdom","Phylum","Class","Order","Family","Genus"),
+           sep= ":",
+           remove= TRUE)
+
+sv_xo<-subset(x.effect.xo, !grepl("Methanobacteriota", Phylum))
+
+theme_new<-theme_set(theme_bw())
+pos <- position_jitter(height = 0.2)
+
+SV_xos<-ggplot(sv_in, aes(x=effect, y=Phylum, label=Genus)) + 
+  geom_point(aes(colour = cut(effect, c(-Inf, -0.5, 0.5, Inf)), alpha=cut(effect, c(-Inf, -0.5, 0.5, Inf))), 
+             size = 3, position = pos) +
+  scale_color_manual(name = "enriched",
+                     values = c("(-Inf,-0.5]" = "black",
+                                "(-0.5,0.5]" = "black",
+                                "(0.5, Inf]" = "indianred1")) +
+  scale_alpha_manual(name = "enriched",
+                     values = c("(-Inf,-0.5]" = 0.8,
+                                "(-0.5,0.5]" = 0.1,
+                                "(0.5, Inf]" = 0.8)) +
+  xlab("Effect Size") +
+  scale_y_discrete(limits=rev) +
+  geom_text_repel(aes(label = ifelse(effect > 0.75, Genus, "")), position = position_jitter(height=0.2), size=2.5, max.overlaps = Inf, alpha=0.5) +
+  theme(legend.position="none")
+SV_xos
+```
+
+### 2C-K. The CLR-transformed relative abundance of nine keystone genera.
+
+```{r, warning=FALSE}
+clrm<-merge(d.clr, meta, by=0, all=FALSE)
+
+# separate the taxa string into the different elements
+test<-colnames(clrm)[2:101]
+test1<-data.frame(str_split_fixed(test, ":", 6))
+# Create a new column based on the 6th element
+new_cols <- ifelse(test1$X6 == "NA", paste(test1$X5, test1$X6, sep = "_"), test1$X6)
+
+# Update column names
+colnames(clrm)[2:101] <- new_cols
+	
+# Define the list of y variables
+y_variables <- c(
+  "Akkermansia",
+  "Bacteroides",
+  "Bifidobacterium",
+  "Coprococcus",
+  "Faecalibacterium",
+  "Lachnospira",
+  "Lactobacillus",
+  "Roseburia",
+  "Ruminococcus"
+)
+
+# Loop through the variables and create plots
+plots <- list()
+
+for (y_var in y_variables) {
+  plot <- ggplot(clrm, aes_string(x = "Treatment", y = y_var, group = "Donor")) +
+    geom_point(aes(fill = Donor, colour = Donor), shape = 21, size = 5, stroke = 1) +
+    scale_fill_manual(values = cols %>% sapply(function(x) adjustcolor(x, alpha.f = 0.25))) +
+    scale_colour_manual(values = cols) +
+    ylab("Relative abundance (CLR)") +
+    ggtitle(paste0(y_var, " spp.")) +
+    scale_x_discrete(labels = c("C", "IN", "XO")) +
+    stat_summary(
+      aes_string(x = "Treatment", y = y_var),
+      fun = median, geom = "point", shape = 95, size = 10, inherit.aes = FALSE
+    ) +
+    theme_bw() +
+    theme(
+      axis.title.x = element_blank(),
+      axis.title=element_text(size=8),
+      axis.test=element_text(size=8),
+      legend.position = "none"
+    )
+
+  # Save each plot in a list
+  plots[[y_var]] <- plot
+}
+
+# Optionally, display all plots in a grid or save them
+grid.arrange(grobs = plots, ncol = 3)
+
+
+```
+
+### Build the figure panel
+
+```{r, warning=FALSE, fig.cap="Figure 2. Prebiotic treatment significantly altered the microbiota composition"}
+
+layout<-rbind(c(1,1,1),c(1,1,1),c(2,2,2),c(2,2,2),c(3,4,5),c(6,7,8),c(9,10,11))
+
+combined_plots <- c(list(SV_inulin, SV_xos), plots)
+fig2 <- grid.arrange(grobs = combined_plots, layout_matrix = layout, heights = c(1, 1, 1, 1, 2, 2, 2))
+```
+
+## Figure 3. Volcano plots display differentially abundant microbiota functional features in response to inulin (A, B) and XOS (C, D) treatments.
+
+First we must perform differential abundance analysis using ALDEx2 on the inferred functional outputs from picrust2 (the EC numbers and functional pathways). These values will then be used to make the volcano plots in Figure 3.
+
+These results will not be identical each time you repeat these analyses. This is because ALDEx2 uses Monte Carlo sampling to estimate distributions from compositional data, and each run draws slightly different random samples from those estimated distributions, so the resulting effect sizes and test statistics vary slightly.
+
+```{r, warning=FALSE, message=FALSE}
+ec <- read.table("data/picrust_ec.txt", sep="\t", quote="", header=T, row.names = 1)
+ec <- round(ec, digits=0)
+
+cont<-grep("_control", colnames(ec))
+inulin<-grep("_inulin", colnames(ec))
+xo<-grep("_xos", colnames(ec))
+
+aldex.ec.in<-ec[,c(inulin,cont)]
+conds.in<-c(rep("inulin", length(inulin)), rep("cont", length(cont)))
+
+x.ec.in <- aldex.clr(aldex.ec.in, conds.in, mc.samples=128)
+
+x.tt.ec.in <- aldex.ttest(x.ec.in, paired.test=TRUE)
+
+x.effect.ec.in <- aldex.effect(x.ec.in, paired.test=TRUE)
+
+x.all.ec.in <- data.frame(x.tt.ec.in, x.effect.ec.in)
+
+x.effect.ec.in <- tibble::rownames_to_column(x.effect.ec.in, var="EC number")
+
+datatable(
+  x.effect.ec.in,
+  options = list(
+    scrollY='300px',
+    scrollX= TRUE,
+    paging= FALSE
+  ),
+  caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::em('ALDEx2 Effect Size Test: Control vs. Inulin in functional EC numbers')
+  )
+)
+```
+
+Now repeat, testing the comparison between control and xos treated samples.
+
+```{r, warning=FALSE, message=FALSE}
+aldex.ec.xo<-ec[,c(xo,cont)]
+conds.xo<-c(rep("xo", length(xo)), rep("cont", length(cont)))
+
+x.ec.xo <- aldex.clr(aldex.ec.xo, conds.xo, mc.samples=128)
+
+x.tt.ec.xo <- aldex.ttest(x.ec.xo, paired.test=TRUE)
+
+x.effect.ec.xo <- aldex.effect(x.ec.xo, paired.test=TRUE)
+
+x.all.ec.xo <- data.frame(x.tt.ec.xo, x.effect.ec.xo)
+
+x.effect.ec.xo <- tibble::rownames_to_column(x.effect.ec.xo, var="EC number")
+
+datatable(
+  x.effect.ec.xo,
+  options = list(
+    scrollY='300px',
+    scrollX= TRUE,
+    paging= FALSE
+  ),
+  caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::em('ALDEx2 Effect Size Test: Control vs. XOS in functional EC numbers')
+  )
+)
+```
+
+Now repeat again for Inulin and XOS for funcitonal pathways.
+
+```{r, warning=FALSE, message=FALSE}
+paths <- read.table("data/picrust_paths.txt", sep="\t", quote="", header=T, row.names = 1)
+paths <- round(paths, digits=0)
+
+cont<-grep("_control", colnames(paths))
+inulin<-grep("_inulin", colnames(paths))
+xo<-grep("_xos", colnames(paths))
+
+aldex.paths.in<-paths[,c(inulin,cont)]
+conds.in<-c(rep("inulin", length(inulin)), rep("cont", length(cont)))
+
+x.paths.in <- aldex.clr(aldex.paths.in, conds.in, mc.samples=128)
+
+x.tt.paths.in <- aldex.ttest(x.paths.in, paired.test=TRUE)
+
+x.effect.paths.in <- aldex.effect(x.paths.in, paired.test=TRUE)
+
+x.all.paths.in <- data.frame(x.tt.paths.in, x.effect.paths.in)
+
+x.effect.paths.in <- tibble::rownames_to_column(x.effect.paths.in, var="Pathway")
+
+datatable(
+  x.effect.paths.in,
+  options = list(
+    scrollY='300px',
+    scrollX= TRUE,
+    paging= FALSE
+  ),
+  caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::em('ALDEx2 Effect Size Test: Control vs. Inulin in functional pathways')
+  )
+)
+```
+
+```{r, warning=FALSE, message=FALSE}
+aldex.paths.xo<-paths[,c(xo,cont)]
+conds.xo<-c(rep("xo", length(xo)), rep("cont", length(cont)))
+
+x.paths.xo <- aldex.clr(aldex.paths.xo, conds.xo, mc.samples=128)
+
+x.tt.paths.xo <- aldex.ttest(x.paths.xo, paired.test=TRUE)
+
+x.effect.paths.xo <- aldex.effect(x.paths.xo, paired.test=TRUE)
+
+x.all.paths.xo <- data.frame(x.tt.paths.xo, x.effect.paths.xo)
+
+x.effect.paths.xo <- tibble::rownames_to_column(x.effect.paths.xo, var="EC number")
+
+datatable(
+  x.effect.paths.xo,
+  options = list(
+    scrollY='300px',
+    scrollX= TRUE,
+    paging= FALSE
+  ),
+  caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left;',
+    htmltools::em('ALDEx2 Effect Size Test: Control vs. XOS in functional pathways')
+  )
+)
+```
+
+### 3A. Control vs Inulin (EC number) volcano plot
+
+```{r}
+#colours based on significance!
+# add a column
+x.all.ec.in$diffexpressed <- "NO"
+# if log2Foldchange > 0.5 and pvalue < 0.05, set as "UP" 
+x.all.ec.in$diffexpressed[x.all.ec.in$effect > 0.5] <- "UP"
+# if log2Foldchange < -0.5 and pvalue < 0.05, set as "DOWN"
+x.all.ec.in$diffexpressed[x.all.ec.in$effect < -0.5] <- "DOWN"
+
+#labels based on significance!
+x.all.ec.in$delabel <- NA
+#x.all.ec.in$delabel[x.all.ec.in$diffexpressed != "NO"] <- rownames(x.all.ec.in)[x.all.ec.in$diffexpressed != "NO"]
+x.all.ec.in$delabel[x.all.ec.in$effect > 0.5 | x.all.ec.in$effect < -2] <- rownames(x.all.ec.in)[x.all.ec.in$effect > 0.5 | x.all.ec.in$effect < -2]
+
+p_ec_in <- ggplot(data=x.all.ec.in, aes(x=effect, y=-log10(wi.ep), col=diffexpressed)) +
+  geom_point(aes(alpha = ifelse(diffexpressed == "NO", 0.5, 1))) +
+  theme_bw() +
+  scale_color_manual(values=c("black", "black", "steelblue1")) +
+  theme(legend.position="none") +
+  labs(x="Effect Size", y="Wilcoxon P (-log10)", title="A) EC numbers: Inulin")
+p_ec_in
+```
+
+### 3B. Control vs XOS (EC number) volcano plot
+
+```{r}
+#colours based on significance!
+# add a column
+x.all.ec.xo$diffexpressed <- "NO"
+# if log2Foldchange > 0.5 and pvalue < 0.05, set as "UP" 
+x.all.ec.xo$diffexpressed[x.all.ec.xo$effect > 0.5] <- "UP"
+# if log2Foldchange < -0.5 and pvalue < 0.05, set as "DOWN"
+x.all.ec.xo$diffexpressed[x.all.ec.xo$effect < -0.5] <- "DOWN"
+
+#labels based on significance!
+x.all.ec.xo$delabel <- NA
+#x.all.ec.xo$delabel[x.all.ec.xo$diffexpressed != "NO"] <- rownames(x.all.ec.xo)[x.all.ec.xo$diffexpressed != "NO"]
+x.all.ec.xo$delabel[x.all.ec.xo$effect > 0.5 | x.all.ec.xo$effect < -2] <- rownames(x.all.ec.xo)[x.all.ec.xo$effect > 0.5 | x.all.ec.xo$effect < -2]
+
+p_ec_xo <- ggplot(data=x.all.ec.xo, aes(x=effect, y=-log10(wi.ep), col=diffexpressed)) +
+  geom_point(aes(alpha = ifelse(diffexpressed == "NO", 0.5, 1))) +
+  theme_bw() +
+  scale_color_manual(values=c("black", "black", "indianred1")) +
+  theme(legend.position="none") +
+  labs(x="Effect Size", y="Wilcoxon P (-log10)", title="B) EC numbers: XOS")
+p_ec_xo
+```
+
+### 3C. Control vs Inulin (functional pathway) volcano plot
+
+```{r}
+#colours based on significance!
+# add a column
+x.all.paths.in$diffexpressed <- "NO"
+# if log2Foldchange > 0.5 and pvalue < 0.05, set as "UP" 
+x.all.paths.in$diffexpressed[x.all.paths.in$effect > 0.5] <- "UP"
+# if log2Foldchange < -0.5 and pvalue < 0.05, set as "DOWN"
+x.all.paths.in$diffexpressed[x.all.paths.in$effect < -0.5] <- "DOWN"
+
+#labels based on significance!
+x.all.paths.in$delabel <- NA
+#x.all.paths.in$delabel[x.all.paths.in$diffexpressed != "NO"] <- rownames(x.all.paths.in)[x.all.paths.in$diffexpressed != "NO"]
+x.all.paths.in$delabel[x.all.paths.in$effect > 0.5 | x.all.paths.in$effect < -2] <- rownames(x.all.paths.in)[x.all.paths.in$effect > 0.5 | x.all.paths.in$effect < -2]
+
+p_paths_in <- ggplot(data=x.all.paths.in, aes(x=effect, y=-log10(wi.ep), col=diffexpressed)) +
+  geom_point(aes(alpha = ifelse(diffexpressed == "NO", 0.5, 1))) +
+  theme_bw() +
+  scale_color_manual(values=c("black", "black", "steelblue1")) +
+  theme(legend.position="none") +
+  labs(x="Effect Size", y="Wilcoxon P (-log10)", title="C) Pathways: Inulin")
+p_paths_in
+```
+
+### 3D. Control vs XOS (functional pathway) volcano plot
+
+```{r}
+#colours based on significance!
+# add a column
+x.all.paths.xo$diffexpressed <- "NO"
+# if log2Foldchange > 0.5 and pvalue < 0.05, set as "UP" 
+x.all.paths.xo$diffexpressed[x.all.paths.xo$effect > 0.5] <- "UP"
+# if log2Foldchange < -0.5 and pvalue < 0.05, set as "DOWN"
+x.all.paths.xo$diffexpressed[x.all.paths.xo$effect < -0.5] <- "DOWN"
+
+#labels based on significance!
+x.all.paths.xo$delabel <- NA
+#x.all.paths.xo$delabel[x.all.paths.xo$diffexpressed != "NO"] <- rownames(x.all.paths.xo)[x.all.paths.xo$diffexpressed != "NO"]
+x.all.paths.xo$delabel[x.all.paths.xo$effect > 0.5 | x.all.paths.xo$effect < -2] <- rownames(x.all.paths.xo)[x.all.paths.xo$effect > 0.5 | x.all.paths.xo$effect < -2]
+
+p_paths_xo <- ggplot(data=x.all.paths.xo, aes(x=effect, y=-log10(wi.ep), col=diffexpressed)) +
+  geom_point(aes(alpha = ifelse(diffexpressed == "NO", 0.5, 1))) +
+  theme_bw() +
+  scale_color_manual(values=c("black", "black", "indianred1")) +
+  theme(legend.position="none") +
+  labs(x="Effect Size", y="Wilcoxon P (-log10)", title="D) Pathways: XOS")
+p_paths_xo
+```
+
+### Build the figure panel
+
+```{r, warning=FALSE, fig.cap="Figure 3. Volcano plots display differentially abundant microbiota functional features in response to inulin (A, B) and XOS (C, D) treatments"}
+grid.arrange(p_ec_in, p_ec_xo, p_paths_in, p_paths_xo, nrow=2)
+```
+
+## Figure 4. Prebiotic exposure significantly increases acetate concentration
+
+### 4A. Acetate
+```{r, warning=FALSE}
+meta_scfa <- filter(meta, Treatment != "NA")
+meta_scfa <- meta_scfa[,c(9,10,14,15,18)]
+
+a <- ggplot(meta_scfa, aes(x=Treatment, y=Acetate)) +
+  geom_point(aes(fill=Donor, colour=Donor), shape=21, size=5, stroke=1) +
+  scale_fill_manual(values = cols %>% sapply(function(x) adjustcolor(x, alpha.f = 0.25))) +
+  scale_colour_manual(values = cols) +
+  ylab("Acetate mM") +
+  scale_x_discrete(labels=c("C","IN","XO")) +
+  stat_summary(aes(x = Treatment, y = Acetate), fun = median, geom = "point", shape = 95, size = 10, inherit.aes = FALSE) +
+  theme_bw() +  # White background
+  theme(axis.title.x=element_blank(),legend.position="none")
+```
+
+### 4B. Butyrate
+
+```{r, warning=FALSE}
+b <- ggplot(meta_scfa, aes(x=Treatment, y=Butyrate)) +
+  geom_point(aes(fill=Donor, colour=Donor), shape=21, size=5, stroke=1) +
+  scale_fill_manual(values = cols %>% sapply(function(x) adjustcolor(x, alpha.f = 0.25))) +
+  scale_colour_manual(values = cols) +
+  ylab("Butyrate mM") +
+  scale_x_discrete(labels=c("C","IN","XO")) +
+  stat_summary(aes(x = Treatment, y = Butyrate), fun = median, geom = "point", shape = 95, size = 10, inherit.aes = FALSE) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),legend.position="none")
+```
+
+### 4C. Propionate
+
+```{r, warning=FALSE}
+p <- ggplot(meta_scfa, aes(x=Treatment, y=Propionate)) +
+  geom_point(aes(fill=Donor, colour=Donor), shape=21, size=5, stroke=1) +
+  scale_fill_manual(values = cols %>% sapply(function(x) adjustcolor(x, alpha.f = 0.25))) +
+  scale_colour_manual(values = cols) +
+  ylab("Propionate mM") +
+  scale_x_discrete(labels=c("C","IN","XO")) +
+  stat_summary(aes(x = Treatment, y = Propionate), fun = median, geom = "point", shape = 95, size = 10, inherit.aes = FALSE) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(), legend.position="none")
+
+```
+
+### Build the figure panel
+
+```{r, warning=FALSE}
+legend <- get_legend(
+  p + theme(legend.position = "right"))
+
+plots <- plot_grid(a, b, p, nrow = 1, align = "hv")
+final <- plot_grid(plots, legend, rel_widths = c(1, 0.1))
+
+final
+```
+
+
+
+::: {.tocify-extend-page data-unique="tocify-extend-page" style="height: 598px;"}
+:::
